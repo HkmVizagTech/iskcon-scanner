@@ -16,6 +16,10 @@ import {
 import { format } from "date-fns";
 import toast from "react-hot-toast";
 
+// Tell Next.js to NOT prerender this page
+export const dynamic = "force-dynamic";
+export const runtime = "edge";
+
 interface ScanRecord {
   id: string;
   qrData: string;
@@ -32,8 +36,10 @@ export default function HistoryPage() {
   const [isOnline, setIsOnline] = useState(true);
   const [station, setStation] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const token = localStorage.getItem("scannerToken");
     const savedStation = localStorage.getItem("station");
 
@@ -44,8 +50,6 @@ export default function HistoryPage() {
 
     setStation(savedStation || "");
     setIsOnline(navigator.onLine);
-
-    // Load scans from IndexedDB/localStorage
     loadScans();
   }, []);
 
@@ -66,7 +70,6 @@ export default function HistoryPage() {
     const offlineScans = JSON.parse(
       localStorage.getItem("offlineScans") || "[]",
     );
-
     if (offlineScans.length === 0) {
       toast.success("No offline scans to sync");
       return;
@@ -86,21 +89,12 @@ export default function HistoryPage() {
         },
         body: JSON.stringify({ scans: offlineScans }),
       });
-
       const data = await response.json();
-
       if (data.success) {
-        // Clear offline scans
         localStorage.setItem("offlineScans", "[]");
-
-        // Mark scans as synced
-        const updatedScans = scans.map((scan) => ({
-          ...scan,
-          synced: true,
-        }));
+        const updatedScans = scans.map((scan) => ({ ...scan, synced: true }));
         setScans(updatedScans);
         localStorage.setItem("scanHistory", JSON.stringify(updatedScans));
-
         toast.success(`Synced ${data.synced} scans`);
       }
     } catch (error) {
@@ -110,13 +104,16 @@ export default function HistoryPage() {
     }
   };
 
+  if (!mounted) {
+    return <div className="p-8 text-center">Loading...</div>;
+  }
+
   const offlineCount = JSON.parse(
     localStorage.getItem("offlineScans") || "[]",
   ).length;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <div className="bg-gradient-to-r from-orange-500 to-red-600 text-white p-4 sticky top-0 z-10">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -136,7 +133,6 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* Sync Bar */}
       {offlineCount > 0 && (
         <div className="bg-yellow-50 border-b border-yellow-200 p-4">
           <div className="flex items-center justify-between">
@@ -156,12 +152,11 @@ export default function HistoryPage() {
         </div>
       )}
 
-      {/* Stats */}
       <div className="p-4 bg-white border-b border-gray-200">
         <div className="flex justify-around">
           <div className="text-center">
             <p className="text-2xl font-bold text-gray-900">{scans.length}</p>
-            <p className="text-sm text-gray-500">Total Scans</p>
+            <p className="text-sm text-gray-500">Total</p>
           </div>
           <div className="text-center">
             <p className="text-2xl font-bold text-green-600">
@@ -178,11 +173,9 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* Scan List */}
       <div className="p-4">
         {scans.length === 0 ? (
           <div className="text-center py-12">
-            <Clock className="w-16 h-16 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500">No scans yet</p>
             <Link
               href="/scan"
@@ -220,11 +213,7 @@ export default function HistoryPage() {
                     </div>
                   </div>
                   <span
-                    className={`px-2 py-1 text-xs rounded-full ${
-                      scan.result === "granted"
-                        ? "bg-green-100 text-green-700"
-                        : "bg-red-100 text-red-700"
-                    }`}
+                    className={`px-2 py-1 text-xs rounded-full ${scan.result === "granted" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
                   >
                     {scan.result}
                   </span>
@@ -235,7 +224,6 @@ export default function HistoryPage() {
         )}
       </div>
 
-      {/* Clear Button */}
       {scans.length > 0 && (
         <div className="p-4">
           <button
