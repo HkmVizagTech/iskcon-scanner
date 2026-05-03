@@ -135,16 +135,17 @@ export default function ScanPage() {
     scannerRef.current = null;
   }, []);
 
-  // ─── Scan success implementation (updated every render via ref) ───
-  // This is NOT passed to html5-qrcode directly — stableCallback is.
-  // So it can safely read fresh state/refs without closure issues.
+  // scan/page.tsx - Fix the scan success handler
+
   onScanSuccessImplRef.current = async (decodedText: string) => {
-    // Synchronous guard — must be FIRST, before any await
-    if (processingRef.current) return;
+    // Synchronous guard
+    if (processingRef.current) {
+      console.log("[SCAN] Already processing, skipping");
+      return; // ✅ Just return, don't process
+    }
     processingRef.current = true;
 
-    // Null-out scanner ref synchronously so any in-flight frame
-    // callbacks from html5-qrcode hit a dead instance
+    // Stop scanner immediately
     const activeScanner = scannerRef.current;
     scannerRef.current = null;
     setIsScanning(false);
@@ -153,10 +154,15 @@ export default function ScanPage() {
       await activeScanner?.stop();
     } catch (_) {}
 
+    // ✅ FIX: Add delay to ensure scanner fully stops
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
     try {
       const token = localStorage.getItem("scannerToken");
       const currentStationId = selectedStationRef.current;
       const currentStations = assignedStationsRef.current;
+
+      // ✅ FIX: Read group count from ref (most current value)
       const currentGroupCount = groupCountRef.current;
 
       const stationData = currentStations.find(
@@ -165,6 +171,13 @@ export default function ScanPage() {
       const effectiveCount = stationData?.allowGroupCount
         ? currentGroupCount
         : 1;
+
+      console.log("📤 Sending scan:", {
+        stationId: currentStationId,
+        stationName: stationData?.stationLabel,
+        groupCount: effectiveCount,
+        allowGroup: stationData?.allowGroupCount,
+      });
 
       if (!currentStationId) {
         setLastResult({
@@ -176,6 +189,9 @@ export default function ScanPage() {
         return;
       }
 
+      // ✅ FIX: Generate unique client ID to prevent backend duplicates
+      const clientScanId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
       const response = await axios.post(
         `${API_URL}/scan`,
         {
@@ -183,10 +199,12 @@ export default function ScanPage() {
           epId: currentStationId,
           stationLabel: stationData?.stationLabel || "",
           groupCount: effectiveCount,
+          clientScanId: clientScanId, // ✅ Add client ID for dedup
         },
         { headers: { Authorization: `Bearer ${token}` } },
       );
 
+      console.log("📥 Scan response:", response.data);
       setLastResult(response.data);
 
       if (response.data.success) {
@@ -194,11 +212,16 @@ export default function ScanPage() {
         navigator.vibrate?.(200);
       } else {
         navigator.vibrate?.([100, 100, 100]);
+
+        // ✅ FIX: If duplicate, don't wait as long
+        if (response.data.result === "duplicate") {
+          console.log("Duplicate detected, fast restart");
+        }
       }
 
       setShowGroupInput(false);
-      setGroupCount(1);
     } catch (error: any) {
+      console.error("❌ Scan error:", error);
       setLastResult({
         success: false,
         result: "invalid",
@@ -207,13 +230,19 @@ export default function ScanPage() {
       navigator.vibrate?.([100, 100, 100]);
     }
 
-    // Auto-restart after 2 s
-    resultTimerRef.current = setTimeout(() => {
-      setLastResult(null);
-      processingRef.current = false;
-      const camId = currentCameraIdRef.current;
-      if (camId) startScanner(camId);
-    }, 2000);
+    // Auto-restart after delay
+    resultTimerRef.current = setTimeout(
+      () => {
+        setLastResult(null);
+        processingRef.current = false;
+        const camId = currentCameraIdRef.current;
+        if (camId) {
+          console.log("🔄 Restarting scanner...");
+          startScanner(camId);
+        }
+      },
+      lastResult?.result === "duplicate" ? 500 : 2000,
+    ); // ✅ Faster restart for duplicates
   };
 
   // ─── Initialise on mount ──────────────────────────────────────────
