@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { db, getUnsyncedScans, markScansAsSynced, ScanRecord } from "./db";
+import { getUnsyncedScans, markScansAsSynced } from "./db";
 
 const SYNC_INTERVAL = 30000; // 30 seconds
 
@@ -8,18 +8,9 @@ class SyncService {
   private isSyncing = false;
 
   start() {
-    // Initial sync
     this.sync();
-
-    // Periodic sync
-    this.syncTimer = setInterval(() => {
-      this.sync();
-    }, SYNC_INTERVAL);
-
-    // Sync when online
-    window.addEventListener("online", () => {
-      this.sync();
-    });
+    this.syncTimer = setInterval(() => { this.sync(); }, SYNC_INTERVAL);
+    window.addEventListener("online", () => { this.sync(); });
   }
 
   stop() {
@@ -30,9 +21,7 @@ class SyncService {
   }
 
   async sync() {
-    if (!navigator.onLine || this.isSyncing) {
-      return;
-    }
+    if (!navigator.onLine || this.isSyncing) return;
 
     this.isSyncing = true;
 
@@ -46,52 +35,43 @@ class SyncService {
 
       console.log(`Syncing ${unsyncedScans.length} offline scans...`);
 
-      // Format scans for API
       const scansToSync = unsyncedScans.map((scan) => ({
         qrData: scan.qrData,
         epId: scan.epId,
         stationLabel: scan.station,
+        // FIX: use the IndexedDB record id as client_scan_id for exact dedup
         client_scan_id: `scan-${scan.id}`,
         timestamp: scan.timestamp,
       }));
 
-      // Send to server
       const response = await api.syncOfflineScans(scansToSync);
 
       if (response.success) {
-        // Mark as synced
-        const syncedIds = unsyncedScans
-          .filter((_, index) => index < response.synced)
-          .map((scan) => scan.id!);
+        // FIX: Use the server's syncedIds list to mark exactly the right records,
+        // not "the first N by index" which broke when records partially failed.
+        const syncedClientIds: string[] = response.syncedIds || [];
 
-        await markScansAsSynced(syncedIds);
+        if (syncedClientIds.length > 0) {
+          // Map client IDs back to IndexedDB numeric IDs
+          const syncedDbIds = unsyncedScans
+            .filter((scan) => syncedClientIds.includes(`scan-${scan.id}`))
+            .map((scan) => scan.id!);
 
-        console.log(
-          `Synced ${response.synced} scans, ${response.duplicates} duplicates`,
-        );
+          await markScansAsSynced(syncedDbIds);
+        } else if (response.synced > 0) {
+          // Fallback: server didn't return syncedIds (older backend) — use count
+          const syncedIds = unsyncedScans
+            .slice(0, response.synced)
+            .map((scan) => scan.id!);
+          await markScansAsSynced(syncedIds);
+        }
 
-        // Update localStorage
-        this.updateLocalStorageSyncStatus(syncedIds);
+        console.log(`Synced ${response.synced} scans, ${response.duplicates} duplicates`);
       }
     } catch (error) {
       console.error("Sync failed:", error);
     } finally {
       this.isSyncing = false;
-    }
-  }
-
-  private updateLocalStorageSyncStatus(ids: number[]) {
-    try {
-      const scans = JSON.parse(localStorage.getItem("scanHistory") || "[]");
-      const updatedScans = scans.map((scan: any) => {
-        if (ids.includes(parseInt(scan.id))) {
-          return { ...scan, synced: true };
-        }
-        return scan;
-      });
-      localStorage.setItem("scanHistory", JSON.stringify(updatedScans));
-    } catch (error) {
-      console.error("Failed to update localStorage:", error);
     }
   }
 

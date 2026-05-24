@@ -17,12 +17,21 @@ interface AssignedStation {
   allowGroupCount?: boolean;
 }
 
+// FIX: Check token expiry before use to prevent silent 401 failures
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    // exp is in seconds
+    return payload.exp * 1000 < Date.now();
+  } catch {
+    return true; // treat unparseable token as expired
+  }
+}
+
 export default function ScanPage() {
   const router = useRouter();
   const [volunteerName, setVolunteerName] = useState("");
-  const [assignedStations, setAssignedStations] = useState<AssignedStation[]>(
-    [],
-  );
+  const [assignedStations, setAssignedStations] = useState<AssignedStation[]>([]);
   const [selectedStation, setSelectedStation] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
   const [isOnline, setIsOnline] = useState(true);
@@ -38,158 +47,106 @@ export default function ScanPage() {
   const processingRef = useRef(false);
   const resultTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Refs so callbacks always read current values (avoids stale closure)
   const selectedStationRef = useRef("");
   const assignedStationsRef = useRef<AssignedStation[]>([]);
   const groupCountRef = useRef(1);
   const currentCameraIdRef = useRef("");
+  // FIX: store lastResult in a ref so the setTimeout restart can read it
+  const lastResultRef = useRef<any>(null);
 
-  // Keep refs in sync with state
-  useEffect(() => {
-    selectedStationRef.current = selectedStation;
-  }, [selectedStation]);
-  useEffect(() => {
-    assignedStationsRef.current = assignedStations;
-  }, [assignedStations]);
-  useEffect(() => {
-    groupCountRef.current = groupCount;
-  }, [groupCount]);
-  useEffect(() => {
-    currentCameraIdRef.current = currentCameraId;
-  }, [currentCameraId]);
+  useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
+  useEffect(() => { assignedStationsRef.current = assignedStations; }, [assignedStations]);
+  useEffect(() => { groupCountRef.current = groupCount; }, [groupCount]);
+  useEffect(() => { currentCameraIdRef.current = currentCameraId; }, [currentCameraId]);
+  useEffect(() => { lastResultRef.current = lastResult; }, [lastResult]);
 
-  // ─── Camera helpers ───────────────────────────────────────────────
   const pickBackCamera = (cameras: any[]) => {
     const back = cameras.find((c) => /back|environment|rear/i.test(c.label));
     return back ?? cameras[0];
   };
 
-  // ─── Stable callback ref ──────────────────────────────────────────
-  // html5-qrcode internally registers whichever function you pass to
-  // scanner.start(). If you pass a new function reference on each
-  // startScanner() call it accumulates listeners → double/triple fire.
-  // Solution: always pass the SAME stable wrapper; the wrapper reads
-  // the latest logic from onScanSuccessImpl via a ref.
-  const onScanSuccessImplRef = useRef<(text: string) => Promise<void>>(
-    async () => {},
-  );
-  // Stable wrapper — identity never changes, so html5-qrcode only ever
-  // has ONE listener registered regardless of how many restarts happen.
+  const onScanSuccessImplRef = useRef<(text: string) => Promise<void>>(async () => {});
   const stableCallback = useRef((decodedText: string) => {
     onScanSuccessImplRef.current(decodedText);
   }).current;
 
-  // ─── Start scanner ────────────────────────────────────────────────
-  const startScanner = useCallback(
-    async (cameraId: string) => {
-      // Tear down any existing instance first
-      if (scannerRef.current) {
-        try {
-          const state = scannerRef.current.getState();
-          if (
-            state === Html5QrcodeScannerState.SCANNING ||
-            state === Html5QrcodeScannerState.PAUSED
-          ) {
-            await scannerRef.current.stop();
-          }
-        } catch (_) {}
-        scannerRef.current = null;
-      }
-
-      const scanner = new Html5Qrcode("qr-reader");
-      scannerRef.current = scanner;
-
+  const startScanner = useCallback(async (cameraId: string) => {
+    if (scannerRef.current) {
       try {
-        await scanner.start(
-          cameraId,
-          {
-            fps: 20,
-            aspectRatio: window.innerHeight / window.innerWidth,
-            disableFlip: false,
-          },
-          stableCallback, // ← same reference every time, never accumulates
-          () => {},
-        );
-        setIsScanning(true);
-      } catch (err: any) {
-        console.error("startScanner error:", err);
-        toast.error("Camera failed to start. Check permissions.");
-      }
-    },
-    [stableCallback],
-  );
+        const state = scannerRef.current.getState();
+        if (state === Html5QrcodeScannerState.SCANNING || state === Html5QrcodeScannerState.PAUSED) {
+          await scannerRef.current.stop();
+        }
+      } catch (_) {}
+      scannerRef.current = null;
+    }
 
-  // ─── Stop scanner ─────────────────────────────────────────────────
+    const scanner = new Html5Qrcode("qr-reader");
+    scannerRef.current = scanner;
+
+    try {
+      await scanner.start(
+        cameraId,
+        { fps: 20, aspectRatio: window.innerHeight / window.innerWidth, disableFlip: false },
+        stableCallback,
+        () => {},
+      );
+      setIsScanning(true);
+    } catch (err: any) {
+      console.error("startScanner error:", err);
+      toast.error("Camera failed to start. Check permissions.");
+    }
+  }, [stableCallback]);
+
   const stopScanner = useCallback(async () => {
     setIsScanning(false);
     if (!scannerRef.current) return;
     try {
       const state = scannerRef.current.getState();
-      if (
-        state === Html5QrcodeScannerState.SCANNING ||
-        state === Html5QrcodeScannerState.PAUSED
-      ) {
+      if (state === Html5QrcodeScannerState.SCANNING || state === Html5QrcodeScannerState.PAUSED) {
         await scannerRef.current.stop();
       }
     } catch (_) {}
     scannerRef.current = null;
   }, []);
 
-  // scan/page.tsx - Fix the scan success handler
-
   onScanSuccessImplRef.current = async (decodedText: string) => {
-    // Synchronous guard
-    if (processingRef.current) {
-      console.log("[SCAN] Already processing, skipping");
-      return; // ✅ Just return, don't process
-    }
+    if (processingRef.current) return;
     processingRef.current = true;
 
-    // Stop scanner immediately
     const activeScanner = scannerRef.current;
     scannerRef.current = null;
     setIsScanning(false);
 
-    try {
-      await activeScanner?.stop();
-    } catch (_) {}
-
-    // ✅ FIX: Add delay to ensure scanner fully stops
+    try { await activeScanner?.stop(); } catch (_) {}
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     try {
       const token = localStorage.getItem("scannerToken");
+
+      // FIX: Check token expiry before making the scan request
+      if (!token || isTokenExpired(token)) {
+        toast.error("Session expired. Please log in again.");
+        localStorage.removeItem("scannerToken");
+        localStorage.removeItem("volunteerName");
+        localStorage.removeItem("assignedEntryPoints");
+        router.push("/");
+        return;
+      }
+
       const currentStationId = selectedStationRef.current;
       const currentStations = assignedStationsRef.current;
-
-      // ✅ FIX: Read group count from ref (most current value)
       const currentGroupCount = groupCountRef.current;
 
-      const stationData = currentStations.find(
-        (s) => s._id === currentStationId,
-      );
-      const effectiveCount = stationData?.allowGroupCount
-        ? currentGroupCount
-        : 1;
-
-      console.log("📤 Sending scan:", {
-        stationId: currentStationId,
-        stationName: stationData?.stationLabel,
-        groupCount: effectiveCount,
-        allowGroup: stationData?.allowGroupCount,
-      });
+      const stationData = currentStations.find((s) => s._id === currentStationId);
+      const effectiveCount = stationData?.allowGroupCount ? currentGroupCount : 1;
 
       if (!currentStationId) {
-        setLastResult({
-          success: false,
-          result: "invalid",
-          message: "No station selected.",
-        });
+        setLastResult({ success: false, result: "invalid", message: "No station selected." });
         processingRef.current = false;
         return;
       }
 
-      // ✅ FIX: Generate unique client ID to prevent backend duplicates
       const clientScanId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
       const response = await axios.post(
@@ -199,53 +156,45 @@ export default function ScanPage() {
           epId: currentStationId,
           stationLabel: stationData?.stationLabel || "",
           groupCount: effectiveCount,
-          clientScanId: clientScanId, // ✅ Add client ID for dedup
+          clientScanId,
         },
         { headers: { Authorization: `Bearer ${token}` } },
       );
 
-      console.log("📥 Scan response:", response.data);
-      setLastResult(response.data);
+      const result = response.data;
+      setLastResult(result);
 
-      if (response.data.success) {
+      if (result.success) {
         setScanCount((prev) => prev + effectiveCount);
         navigator.vibrate?.(200);
       } else {
         navigator.vibrate?.([100, 100, 100]);
-
-        // ✅ FIX: If duplicate, don't wait as long
-        if (response.data.result === "duplicate") {
-          console.log("Duplicate detected, fast restart");
-        }
       }
 
       setShowGroupInput(false);
     } catch (error: any) {
-      console.error("❌ Scan error:", error);
-      setLastResult({
+      const errResult = {
         success: false,
         result: "invalid",
         message: error.response?.data?.message || "Scan failed.",
-      });
+      };
+      setLastResult(errResult);
       navigator.vibrate?.([100, 100, 100]);
     }
 
-    // Auto-restart after delay
-    resultTimerRef.current = setTimeout(
-      () => {
-        setLastResult(null);
-        processingRef.current = false;
-        const camId = currentCameraIdRef.current;
-        if (camId) {
-          console.log("🔄 Restarting scanner...");
-          startScanner(camId);
-        }
-      },
-      lastResult?.result === "duplicate" ? 500 : 2000,
-    ); // ✅ Faster restart for duplicates
+    // FIX: Read restart delay from ref (not stale closure state)
+    resultTimerRef.current = setTimeout(() => {
+      const currentResult = lastResultRef.current;
+      // Fast restart for duplicates, normal delay otherwise
+      const delay = currentResult?.result === "duplicate" ? 0 : 0;
+      setLastResult(null);
+      lastResultRef.current = null;
+      processingRef.current = false;
+      const camId = currentCameraIdRef.current;
+      if (camId) startScanner(camId);
+    }, lastResultRef.current?.result === "duplicate" ? 500 : 2000);
   };
 
-  // ─── Initialise on mount ──────────────────────────────────────────
   useEffect(() => {
     const token = localStorage.getItem("scannerToken");
     const name = localStorage.getItem("volunteerName");
@@ -253,7 +202,12 @@ export default function ScanPage() {
       localStorage.getItem("assignedEntryPoints") || "[]",
     );
 
-    if (!token || stations.length === 0) {
+    if (!token || stations.length === 0) { router.push("/"); return; }
+
+    // FIX: Redirect if token already expired on mount
+    if (isTokenExpired(token)) {
+      toast.error("Session expired. Please log in again.");
+      localStorage.removeItem("scannerToken");
       router.push("/");
       return;
     }
@@ -262,17 +216,18 @@ export default function ScanPage() {
     setAssignedStations(stations);
     setIsOnline(navigator.onLine);
 
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
     Html5Qrcode.getCameras()
       .then((cameras) => {
-        if (!cameras?.length) {
-          toast.error("No cameras found.");
-          return;
-        }
+        if (!cameras?.length) { toast.error("No cameras found."); return; }
         setAvailableCameras(cameras);
         const preferred = pickBackCamera(cameras);
         setCurrentCameraId(preferred.id);
 
-        // Pre-select station
         const firstStation = stations.length === 1 ? stations[0] : null;
         if (firstStation) {
           setSelectedStation(firstStation._id);
@@ -284,17 +239,17 @@ export default function ScanPage() {
     return () => {
       if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
       stopScanner();
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
     };
   }, []);
 
-  // ─── (Re)start scanner when camera or station changes ────────────
   useEffect(() => {
     if (!currentCameraId || !selectedStation) return;
     const t = setTimeout(() => startScanner(currentCameraId), 300);
     return () => clearTimeout(t);
   }, [currentCameraId, selectedStation]);
 
-  // ─── Switch camera ────────────────────────────────────────────────
   const switchCamera = async () => {
     if (availableCameras.length < 2) return;
     await stopScanner();
@@ -303,21 +258,17 @@ export default function ScanPage() {
     setCurrentCameraId(next.id);
   };
 
-  // ─── Station change ───────────────────────────────────────────────
   const handleStationChange = async (stationId: string) => {
     await stopScanner();
     processingRef.current = false;
     setLastResult(null);
     setShowGroupInput(false);
     setGroupCount(1);
-
     const station = assignedStations.find((s) => s._id === stationId);
     setStationAllowsGroup(station?.allowGroupCount ?? false);
     setSelectedStation(stationId);
-    // startScanner will be triggered by the useEffect above
   };
 
-  // ─── Go back ──────────────────────────────────────────────────────
   const handleGoBack = async () => {
     await stopScanner();
     localStorage.removeItem("scannerToken");
@@ -326,22 +277,19 @@ export default function ScanPage() {
     router.push("/");
   };
 
-  const selectedStationData = assignedStations.find(
-    (s) => s._id === selectedStation,
-  );
-
-  // ─── Manual resume ────────────────────────────────────────────────
   const handleContinue = () => {
     if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
     setLastResult(null);
+    lastResultRef.current = null;
     processingRef.current = false;
     const camId = currentCameraIdRef.current;
     if (camId) startScanner(camId);
   };
 
+  const selectedStationData = assignedStations.find((s) => s._id === selectedStation);
+
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col">
-      {/* ── Header ── */}
       <div className="flex-shrink-0 z-30 bg-gradient-to-r from-orange-500 to-red-600">
         <div className="flex items-center px-3 py-2">
           <button onClick={handleGoBack} className="text-white p-1.5 -ml-1">
@@ -366,13 +314,8 @@ export default function ScanPage() {
               className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
             >
               {assignedStations.map((station) => (
-                <option
-                  key={station._id}
-                  value={station._id}
-                  className="text-gray-900"
-                >
-                  {station.stationLabel}
-                  {station.allowGroupCount ? " 👨‍👩‍👧‍👦" : ""}
+                <option key={station._id} value={station._id} className="text-gray-900">
+                  {station.stationLabel}{station.allowGroupCount ? " 👨‍👩‍👧‍👦" : ""}
                 </option>
               ))}
             </select>
@@ -380,22 +323,15 @@ export default function ScanPage() {
         )}
       </div>
 
-      {/* ── Camera viewport ── */}
       <div className="flex-1 relative bg-black overflow-hidden">
-        {/* html5-qrcode mounts here; full-screen via CSS below */}
         <div id="qr-reader" className="absolute inset-0" />
 
-        {/* Switch camera button */}
         {availableCameras.length > 1 && (
-          <button
-            onClick={switchCamera}
-            className="absolute top-3 right-3 z-20 bg-black/50 text-white p-2 rounded-full"
-          >
+          <button onClick={switchCamera} className="absolute top-3 right-3 z-20 bg-black/50 text-white p-2 rounded-full">
             <Camera className="w-4 h-4" />
           </button>
         )}
 
-        {/* Corner brackets overlay (cosmetic only – no qrbox restriction!) */}
         {isScanning && !lastResult && (
           <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
             <div className="relative w-[240px] h-[240px]">
@@ -403,7 +339,6 @@ export default function ScanPage() {
               <div className="absolute top-0 right-0 w-9 h-9 border-t-[3px] border-r-[3px] border-orange-400 rounded-tr" />
               <div className="absolute bottom-0 left-0 w-9 h-9 border-b-[3px] border-l-[3px] border-orange-400 rounded-bl" />
               <div className="absolute bottom-0 right-0 w-9 h-9 border-b-[3px] border-r-[3px] border-orange-400 rounded-br" />
-              {/* Scanning line animation */}
               <div className="absolute left-1 right-1 h-[2px] bg-orange-400/70 animate-scan-line" />
             </div>
 
@@ -417,30 +352,13 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* Result overlay */}
         {lastResult && (
           <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-            <div
-              className={`w-full max-w-[260px] rounded-2xl p-6 text-center shadow-xl ${
-                lastResult.success ? "bg-green-50" : "bg-red-50"
-              }`}
-            >
-              <div
-                className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3 ${
-                  lastResult.success ? "bg-green-500" : "bg-red-500"
-                }`}
-              >
-                {lastResult.success ? (
-                  <CheckCircle className="w-7 h-7 text-white" />
-                ) : (
-                  <XCircle className="w-7 h-7 text-white" />
-                )}
+            <div className={`w-full max-w-[260px] rounded-2xl p-6 text-center shadow-xl ${lastResult.success ? "bg-green-50" : "bg-red-50"}`}>
+              <div className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3 ${lastResult.success ? "bg-green-500" : "bg-red-500"}`}>
+                {lastResult.success ? <CheckCircle className="w-7 h-7 text-white" /> : <XCircle className="w-7 h-7 text-white" />}
               </div>
-              <h2
-                className={`text-lg font-bold mb-1 ${
-                  lastResult.success ? "text-green-900" : "text-red-900"
-                }`}
-              >
+              <h2 className={`text-lg font-bold mb-1 ${lastResult.success ? "text-green-900" : "text-red-900"}`}>
                 {lastResult.success ? "Access Granted" : "Access Denied"}
               </h2>
               {lastResult.success ? (
@@ -455,45 +373,26 @@ export default function ScanPage() {
         )}
       </div>
 
-      {/* ── Group count modal ── */}
       {stationAllowsGroup && showGroupInput && (
         <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
           <div className="bg-white rounded-2xl p-6 w-full max-w-[280px] text-center">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Number of People
-            </h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Number of People</h3>
             <div className="flex items-center justify-center space-x-3 mb-6">
-              <button
-                onClick={() => setGroupCount((n) => Math.max(1, n - 1))}
-                className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 text-2xl font-bold"
-              >
-                −
-              </button>
+              <button onClick={() => setGroupCount((n) => Math.max(1, n - 1))} className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 text-2xl font-bold">−</button>
               <input
                 type="number"
                 value={groupCount}
-                onChange={(e) =>
-                  setGroupCount(Math.max(1, parseInt(e.target.value) || 1))
-                }
+                onChange={(e) => setGroupCount(Math.max(1, parseInt(e.target.value) || 1))}
                 className="w-20 h-12 text-center text-2xl font-bold border-2 border-orange-500 rounded-lg"
                 min="1"
               />
-              <button
-                onClick={() => setGroupCount((n) => n + 1)}
-                className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 text-2xl font-bold"
-              >
-                +
-              </button>
+              <button onClick={() => setGroupCount((n) => n + 1)} className="w-12 h-12 rounded-full bg-orange-100 text-orange-600 text-2xl font-bold">+</button>
             </div>
             <div className="flex gap-3">
               <button
                 onClick={async () => {
-                  setShowGroupInput(false);
-                  setGroupCount(1);
-                  try {
-                    await scannerRef.current?.resume();
-                    setIsScanning(true);
-                  } catch (_) {}
+                  setShowGroupInput(false); setGroupCount(1);
+                  try { await scannerRef.current?.resume(); setIsScanning(true); } catch (_) {}
                 }}
                 className="flex-1 py-2.5 border border-gray-300 rounded-lg text-gray-600"
               >
@@ -502,10 +401,7 @@ export default function ScanPage() {
               <button
                 onClick={async () => {
                   setShowGroupInput(false);
-                  try {
-                    await scannerRef.current?.resume();
-                    setIsScanning(true);
-                  } catch (_) {}
+                  try { await scannerRef.current?.resume(); setIsScanning(true); } catch (_) {}
                 }}
                 className="flex-1 py-2.5 bg-orange-600 text-white rounded-lg font-medium"
               >
@@ -516,15 +412,11 @@ export default function ScanPage() {
         </div>
       )}
 
-      {/* Group quick-button */}
       {stationAllowsGroup && isScanning && !lastResult && !showGroupInput && (
         <button
           onClick={async () => {
             setShowGroupInput(true);
-            try {
-              await scannerRef.current?.pause(true);
-              setIsScanning(false);
-            } catch (_) {}
+            try { await scannerRef.current?.pause(true); setIsScanning(false); } catch (_) {}
           }}
           className="absolute bottom-24 left-4 right-4 z-20 py-3 bg-white/90 text-orange-700 font-medium rounded-xl text-sm shadow-lg"
         >
@@ -533,72 +425,20 @@ export default function ScanPage() {
         </button>
       )}
 
-      {/* ── Footer ── */}
       <div className="bg-white px-4 py-3 flex-shrink-0 z-30 border-t border-gray-200">
         <div className="flex gap-3">
-          <button
-            onClick={handleGoBack}
-            className="flex-1 py-2.5 text-gray-600 font-medium rounded-lg bg-white text-sm border border-gray-300"
-          >
-            Exit
-          </button>
-          <button
-            onClick={handleContinue}
-            className="flex-1 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white font-medium rounded-lg text-sm"
-          >
-            Continue
-          </button>
+          <button onClick={handleGoBack} className="flex-1 py-2.5 text-gray-600 font-medium rounded-lg bg-white text-sm border border-gray-300">Exit</button>
+          <button onClick={handleContinue} className="flex-1 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white font-medium rounded-lg text-sm">Continue</button>
         </div>
       </div>
 
       <style jsx global>{`
-        /* Make html5-qrcode fill its container completely */
-        #qr-reader {
-          border: none !important;
-          padding: 0 !important;
-          margin: 0 !important;
-          width: 100% !important;
-          height: 100% !important;
-        }
-        #qr-reader__scan_region {
-          position: absolute !important;
-          inset: 0 !important;
-          width: 100% !important;
-          height: 100% !important;
-        }
-        #qr-reader__scan_region video {
-          position: absolute !important;
-          inset: 0 !important;
-          width: 100% !important;
-          height: 100% !important;
-          object-fit: cover !important;
-        }
-        /* Hide html5-qrcode's own UI chrome */
-        #qr-reader__dashboard,
-        #qr-reader__status_span,
-        #qr-reader__scan_region > img,
-        #qr-shaded-region,
-        div[id^="qr-shaded-region"] {
-          display: none !important;
-        }
-
-        /* Scanning line animation */
-        @keyframes scan-line {
-          0% {
-            top: 0;
-            opacity: 1;
-          }
-          50% {
-            opacity: 0.6;
-          }
-          100% {
-            top: calc(100% - 2px);
-            opacity: 1;
-          }
-        }
-        .animate-scan-line {
-          animation: scan-line 2s ease-in-out infinite alternate;
-        }
+        #qr-reader { border: none !important; padding: 0 !important; margin: 0 !important; width: 100% !important; height: 100% !important; }
+        #qr-reader__scan_region { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; }
+        #qr-reader__scan_region video { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; object-fit: cover !important; }
+        #qr-reader__dashboard, #qr-reader__status_span, #qr-reader__scan_region > img, #qr-shaded-region, div[id^="qr-shaded-region"] { display: none !important; }
+        @keyframes scan-line { 0% { top: 0; opacity: 1; } 50% { opacity: 0.6; } 100% { top: calc(100% - 2px); opacity: 1; } }
+        .animate-scan-line { animation: scan-line 2s ease-in-out infinite alternate; }
       `}</style>
     </div>
   );
