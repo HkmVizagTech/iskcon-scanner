@@ -3,238 +3,161 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  CheckCircle,
-  XCircle,
-  Clock,
-  Trash2,
-  Upload,
-  Wifi,
-  WifiOff,
-} from "lucide-react";
+import { ArrowLeft, CheckCircle, XCircle, Clock, Trash2, RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { format } from "date-fns";
 import toast from "react-hot-toast";
+import { db, clearAllScans, getScanStats, getUnsyncedScans, type ScanRecord } from "@/lib/db";
+import { syncService } from "@/lib/sync";
 
-// Tell Next.js to NOT prerender this page
 export const dynamic = "force-dynamic";
-export const runtime = "edge";
-
-interface ScanRecord {
-  id: string;
-  qrData: string;
-  station: string;
-  timestamp: string;
-  result: "granted" | "denied";
-  holderName?: string;
-  synced: boolean;
-}
 
 export default function HistoryPage() {
   const router = useRouter();
   const [scans, setScans] = useState<ScanRecord[]>([]);
   const [isOnline, setIsOnline] = useState(true);
-  const [station, setStation] = useState("");
   const [syncing, setSyncing] = useState(false);
+  const [stats, setStats] = useState({ total: 0, granted: 0, denied: 0, unsynced: 0 });
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
     const token = localStorage.getItem("scannerToken");
-    const savedStation = localStorage.getItem("station");
+    if (!token) { router.push("/"); return; }
 
-    if (!token) {
-      router.push("/");
-      return;
-    }
-
-    setStation(savedStation || "");
     setIsOnline(navigator.onLine);
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    // FIX: read from IndexedDB — previously read from localStorage("scanHistory")
+    // which was never written to (scans are saved to IndexedDB via saveScan())
     loadScans();
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }, []);
 
-  const loadScans = () => {
-    const storedScans = JSON.parse(localStorage.getItem("scanHistory") || "[]");
-    setScans(storedScans.reverse());
-  };
-
-  const clearHistory = () => {
-    if (confirm("Clear all scan history?")) {
-      localStorage.setItem("scanHistory", "[]");
-      setScans([]);
-      toast.success("History cleared");
-    }
-  };
-
-  const syncOfflineScans = async () => {
-    const offlineScans = JSON.parse(
-      localStorage.getItem("offlineScans") || "[]",
-    );
-    if (offlineScans.length === 0) {
-      toast.success("No offline scans to sync");
-      return;
-    }
-
-    setSyncing(true);
-    const API_URL =
-      process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
-    const token = localStorage.getItem("scannerToken");
-
+  const loadScans = async () => {
     try {
-      const response = await fetch(`${API_URL}/scan/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ scans: offlineScans }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        localStorage.setItem("offlineScans", "[]");
-        const updatedScans = scans.map((scan) => ({ ...scan, synced: true }));
-        setScans(updatedScans);
-        localStorage.setItem("scanHistory", JSON.stringify(updatedScans));
-        toast.success(`Synced ${data.synced} scans`);
-      }
-    } catch (error) {
-      toast.error("Sync failed");
+      const all = await db.scans.orderBy("timestamp").reverse().limit(200).toArray();
+      setScans(all);
+      const s = await getScanStats();
+      setStats(s);
+    } catch (err) {
+      console.error("Failed to load scans from IndexedDB:", err);
+    }
+  };
+
+  const handleClearHistory = async () => {
+    if (!confirm("Clear all local scan history? This cannot be undone.")) return;
+    await clearAllScans();
+    setScans([]);
+    setStats({ total: 0, granted: 0, denied: 0, unsynced: 0 });
+    toast.success("History cleared");
+  };
+
+  // FIX: sync button now uses syncService.forceSync() which reads from IndexedDB
+  // Previously read from localStorage("offlineScans") which was always empty
+  const handleSync = async () => {
+    if (!navigator.onLine) { toast.error("No connection — sync when online"); return; }
+    setSyncing(true);
+    try {
+      await syncService.forceSync();
+      await loadScans();
+      toast.success("Sync complete");
+    } catch (err) {
+      toast.error("Sync failed — try again");
     } finally {
       setSyncing(false);
     }
   };
 
-  if (!mounted) {
-    return <div className="p-8 text-center">Loading...</div>;
-  }
-
-  const offlineCount = JSON.parse(
-    localStorage.getItem("offlineScans") || "[]",
-  ).length;
+  if (!mounted) return null;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="bg-gradient-to-r from-orange-500 to-red-600 text-white p-4 sticky top-0 z-10">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <Link href="/scan" className="text-white">
-              <ArrowLeft className="w-6 h-6" />
-            </Link>
-            <h1 className="text-xl font-semibold">Scan History</h1>
+      {/* Header */}
+      <div className="bg-gradient-to-r from-orange-500 to-red-600 px-4 py-4 flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <Link href="/scan" className="text-white"><ArrowLeft className="w-6 h-6" /></Link>
+          <div>
+            <h1 className="text-lg font-bold text-white">Scan History</h1>
+            <p className="text-white/80 text-xs">{stats.total} total • {stats.unsynced} unsynced</p>
           </div>
-          <div className="flex items-center space-x-2">
-            {isOnline ? (
-              <Wifi className="w-5 h-5 text-green-300" />
-            ) : (
-              <WifiOff className="w-5 h-5 text-yellow-300" />
-            )}
-            <span className="text-sm">{station}</span>
-          </div>
+        </div>
+        <div className="flex items-center space-x-2">
+          {isOnline ? <Wifi className="w-5 h-5 text-white" /> : <WifiOff className="w-5 h-5 text-white/60" />}
         </div>
       </div>
 
-      {offlineCount > 0 && (
-        <div className="bg-yellow-50 border-b border-yellow-200 p-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center text-yellow-800">
-              <WifiOff className="w-5 h-5 mr-2" />
-              <span>{offlineCount} offline scans pending</span>
-            </div>
-            <button
-              onClick={syncOfflineScans}
-              disabled={syncing || !isOnline}
-              className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 disabled:opacity-50 flex items-center"
-            >
-              <Upload className="w-4 h-4 mr-2" />
-              {syncing ? "Syncing..." : "Sync Now"}
-            </button>
-          </div>
+      {/* Stats Bar */}
+      <div className="bg-white border-b border-gray-100 px-4 py-3 flex justify-around">
+        <div className="text-center">
+          <div className="text-xl font-bold text-green-600">{stats.granted}</div>
+          <div className="text-xs text-gray-500">Granted</div>
         </div>
-      )}
-
-      <div className="p-4 bg-white border-b border-gray-200">
-        <div className="flex justify-around">
-          <div className="text-center">
-            <p className="text-2xl font-bold text-gray-900">{scans.length}</p>
-            <p className="text-sm text-gray-500">Total</p>
-          </div>
-          <div className="text-center">
-            <p className="text-2xl font-bold text-green-600">
-              {scans.filter((s) => s.result === "granted").length}
-            </p>
-            <p className="text-sm text-gray-500">Granted</p>
-          </div>
-          <div className="text-center">
-            <p className="text-2xl font-bold text-red-600">
-              {scans.filter((s) => s.result === "denied").length}
-            </p>
-            <p className="text-sm text-gray-500">Denied</p>
-          </div>
+        <div className="text-center">
+          <div className="text-xl font-bold text-red-500">{stats.denied}</div>
+          <div className="text-xs text-gray-500">Denied</div>
+        </div>
+        <div className="text-center">
+          <div className="text-xl font-bold text-orange-500">{stats.unsynced}</div>
+          <div className="text-xs text-gray-500">Unsynced</div>
         </div>
       </div>
 
-      <div className="p-4">
+      {/* Action Buttons */}
+      <div className="flex gap-3 px-4 py-3">
+        <button
+          onClick={handleSync}
+          disabled={syncing || !isOnline}
+          className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-orange-600 text-white rounded-xl text-sm font-medium disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />
+          {syncing ? "Syncing..." : `Sync${stats.unsynced > 0 ? ` (${stats.unsynced})` : ""}`}
+        </button>
+        <button
+          onClick={handleClearHistory}
+          className="flex items-center gap-2 px-4 py-2.5 border border-red-200 text-red-600 rounded-xl text-sm"
+        >
+          <Trash2 className="w-4 h-4" />Clear
+        </button>
+      </div>
+
+      {/* Scan List */}
+      <div className="px-4 pb-8 space-y-2">
         {scans.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-500">No scans yet</p>
-            <Link
-              href="/scan"
-              className="mt-4 inline-block px-6 py-2 bg-orange-600 text-white rounded-lg"
-            >
-              Start Scanning
-            </Link>
+          <div className="text-center py-16 text-gray-400">
+            <Clock className="w-10 h-10 mx-auto mb-3 opacity-50" />
+            <p className="font-medium">No scans yet</p>
+            <p className="text-sm mt-1">Scans will appear here as you scan QR codes</p>
           </div>
         ) : (
-          <div className="space-y-3">
-            {scans.map((scan) => (
-              <div
-                key={scan.id}
-                className="bg-white rounded-xl p-4 shadow-sm border border-gray-200"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start space-x-3">
-                    {scan.result === "granted" ? (
-                      <CheckCircle className="w-6 h-6 text-green-500 flex-shrink-0" />
-                    ) : (
-                      <XCircle className="w-6 h-6 text-red-500 flex-shrink-0" />
-                    )}
-                    <div>
-                      <p className="font-medium text-gray-900">
-                        {scan.holderName || "Unknown"}
-                      </p>
-                      <p className="text-sm text-gray-500">
-                        {format(new Date(scan.timestamp), "h:mm a")}
-                      </p>
-                      {!scan.synced && (
-                        <span className="inline-block mt-1 px-2 py-0.5 bg-yellow-100 text-yellow-700 text-xs rounded-full">
-                          Pending sync
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <span
-                    className={`px-2 py-1 text-xs rounded-full ${scan.result === "granted" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
-                  >
-                    {scan.result}
-                  </span>
-                </div>
+          scans.map((scan) => (
+            <div key={scan.id} className="bg-white rounded-xl p-4 flex items-center gap-3 shadow-sm">
+              {scan.result === "granted"
+                ? <CheckCircle className="w-8 h-8 text-green-500 flex-shrink-0" />
+                : <XCircle className="w-8 h-8 text-red-500 flex-shrink-0" />}
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-gray-900 truncate">
+                  {scan.holderName || "Unknown Holder"}
+                </p>
+                <p className="text-xs text-gray-500">
+                  {scan.station} • {format(new Date(scan.timestamp), "h:mm a")}
+                </p>
               </div>
-            ))}
-          </div>
+              {!scan.synced && (
+                <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full flex-shrink-0">
+                  Unsynced
+                </span>
+              )}
+            </div>
+          ))
         )}
       </div>
-
-      {scans.length > 0 && (
-        <div className="p-4">
-          <button
-            onClick={clearHistory}
-            className="w-full py-3 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 flex items-center justify-center"
-          >
-            <Trash2 className="w-5 h-5 mr-2" />
-            Clear History
-          </button>
-        </div>
-      )}
     </div>
   );
 }

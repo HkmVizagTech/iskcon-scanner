@@ -39,8 +39,9 @@ class SyncService {
         qrData: scan.qrData,
         epId: scan.epId,
         stationLabel: scan.station,
-        // FIX: use the IndexedDB record id as client_scan_id for exact dedup
-        client_scan_id: `scan-${scan.id}`,
+        // FIX: use the stable UUID stored in the record — not derived from auto-increment id
+        // which resets after DB clear and causes false duplicate detection on the server
+        client_scan_id: scan.clientScanId || `scan-${scan.id}-${Date.now()}`,
         timestamp: scan.timestamp,
       }));
 

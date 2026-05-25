@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import { CheckCircle, XCircle, ArrowLeft, Camera } from "lucide-react";
 import axios from "axios";
-import { saveScan } from "@/lib/db";
+import { saveScan, generateClientScanId } from "@/lib/db";
 import toast from "react-hot-toast";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -148,7 +148,8 @@ export default function ScanPage() {
         return;
       }
 
-      const clientScanId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      // FIX: use stable UUID so dedup works correctly even after DB clears
+      const clientScanId = generateClientScanId();
 
       const response = await axios.post(
         `${API_URL}/scan`,
@@ -183,11 +184,12 @@ export default function ScanPage() {
         // Save offline for later sync
         try {
           await saveScan({
+            clientScanId,       // FIX: persist stable UUID for dedup on sync
             qrData: incomingQrData,
             epId: incomingEpId,
             station: incomingStationLabel || currentStationId,
             timestamp: new Date(),
-            result: "granted", // optimistic — will be validated on sync
+            result: "granted",  // optimistic — server re-validates on sync
             synced: false,
           });
         } catch (_) {}

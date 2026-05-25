@@ -2,6 +2,9 @@ import Dexie, { Table } from "dexie";
 
 export interface ScanRecord {
   id?: number;
+  // FIX: clientScanId stored at creation time (UUID) so it is stable and unique
+  // across DB clears — previously derived from id at sync time which reset after clear
+  clientScanId: string;
   qrData: string;
   station: string;
   timestamp: Date;
@@ -20,7 +23,16 @@ export class ScannerDatabase extends Dexie {
     this.version(1).stores({
       scans: "++id, timestamp, synced, station, result",
     });
+    // FIX: version 2 adds clientScanId index for dedup
+    this.version(2).stores({
+      scans: "++id, clientScanId, timestamp, synced, station, result",
+    });
   }
+}
+
+// Generate a UUID-like unique scan ID
+export function generateClientScanId(): string {
+  return `scan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export const db = new ScannerDatabase();
