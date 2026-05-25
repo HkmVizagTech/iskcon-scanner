@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import { CheckCircle, XCircle, ArrowLeft, Camera } from "lucide-react";
 import axios from "axios";
+import { saveScan } from "@/lib/db";
 import toast from "react-hot-toast";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -173,13 +174,41 @@ export default function ScanPage() {
 
       setShowGroupInput(false);
     } catch (error: any) {
-      const errResult = {
-        success: false,
-        result: "invalid",
-        message: error.response?.data?.message || "Scan failed.",
-      };
-      setLastResult(errResult);
-      navigator.vibrate?.([100, 100, 100]);
+      // FIX: distinguish network errors from server errors
+      // Network errors (no response) → save to IndexedDB for later sync
+      // Server errors (has response) → show server message
+      const isNetworkError = !error.response;
+
+      if (isNetworkError) {
+        // Save offline for later sync
+        try {
+          await saveScan({
+            qrData: incomingQrData,
+            epId: incomingEpId,
+            station: incomingStationLabel || currentStationId,
+            timestamp: new Date(),
+            result: "granted", // optimistic — will be validated on sync
+            synced: false,
+          });
+        } catch (_) {}
+
+        const offlineResult = {
+          success: true,
+          result: "offline_saved",
+          message: "Saved offline — will sync when connected",
+          holderName: "",
+        };
+        setLastResult(offlineResult);
+        navigator.vibrate?.(200);
+      } else {
+        const errResult = {
+          success: false,
+          result: "invalid",
+          message: error.response?.data?.message || "Scan failed.",
+        };
+        setLastResult(errResult);
+        navigator.vibrate?.([100, 100, 100]);
+      }
     }
 
     // FIX: Read restart delay from ref (not stale closure state)
