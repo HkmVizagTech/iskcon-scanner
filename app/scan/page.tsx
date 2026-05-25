@@ -245,10 +245,50 @@ export default function ScanPage() {
     setAssignedStations(stations);
     setIsOnline(navigator.onLine);
 
-    const handleOnline = () => setIsOnline(true);
+    // FIX: Re-fetch volunteer assignments from server on focus and online events.
+    // Previously, if admin assigned a new festival/station AFTER the volunteer
+    // logged in, the scanner kept showing old stations forever (only read from
+    // localStorage at mount). Now we refresh from /volunteers/me so the volunteer
+    // sees updated stations without logging out.
+    const refreshAssignments = async () => {
+      const currentToken = localStorage.getItem("scannerToken");
+      if (!currentToken || !navigator.onLine) return;
+      try {
+        const res = await fetch(`${API_URL}/volunteers/me`, {
+          headers: { Authorization: `Bearer ${currentToken}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const freshStations = data.volunteer?.assignedEntryPoints || [];
+        if (freshStations.length > 0) {
+          localStorage.setItem("assignedEntryPoints", JSON.stringify(freshStations));
+          setAssignedStations(freshStations);
+          // If currently selected station was removed, reset selection
+          setSelectedStation((prev) => {
+            const stillExists = freshStations.some((s: any) => s._id === prev);
+            return stillExists ? prev : (freshStations.length === 1 ? freshStations[0]._id : "");
+          });
+          const name = data.volunteer?.name;
+          if (name) {
+            localStorage.setItem("volunteerName", name);
+            setVolunteerName(name);
+          }
+        }
+      } catch (_) {
+        // silent — offline or token expired; expiry handled separately
+      }
+    };
+
+    const handleOnline = () => { setIsOnline(true); refreshAssignments(); };
     const handleOffline = () => setIsOnline(false);
+    const handleFocus = () => refreshAssignments();
+
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+    window.addEventListener("focus", handleFocus);
+
+    // Initial fetch from server (replaces stale localStorage if server has newer data)
+    refreshAssignments();
 
     Html5Qrcode.getCameras()
       .then((cameras) => {
@@ -270,6 +310,7 @@ export default function ScanPage() {
       stopScanner();
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("focus", handleFocus);
     };
   }, []);
 
