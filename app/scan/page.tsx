@@ -46,6 +46,11 @@ export default function ScanPage() {
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const processingRef = useRef(false);
+  // Client-side cooldown: tracks qrId+epId → last-scan timestamp.
+  // Persists across scanner restarts so the same QR can't create two records
+  // even if html5-qrcode fires the callback again after the scanner restarts.
+  const scanCooldownRef = useRef<Map<string, number>>(new Map());
+  const SCAN_COOLDOWN_MS = 8000; // 8 seconds between scans of the same QR at the same station
   const resultTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const selectedStationRef = useRef("");
@@ -88,7 +93,7 @@ export default function ScanPage() {
     try {
       await scanner.start(
         cameraId,
-        { fps: 20, aspectRatio: window.innerHeight / window.innerWidth, disableFlip: false },
+        { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: window.innerHeight / window.innerWidth, disableFlip: false },
         stableCallback,
         () => {},
       );
@@ -113,6 +118,19 @@ export default function ScanPage() {
 
   onScanSuccessImplRef.current = async (decodedText: string) => {
     if (processingRef.current) return;
+
+    // Client-side cooldown — blocks same QR at same station within 8 seconds.
+    // This is the primary guard against double-records from scanner restarts:
+    // after a result is shown and the scanner restarts, html5-qrcode often fires
+    // the callback again immediately for the QR still in frame. processingRef is
+    // reset by then, but the cooldown map still blocks it.
+    const cooldownKey = `${decodedText.slice(-20)}::${selectedStationRef.current}`;
+    const lastScan = scanCooldownRef.current.get(cooldownKey) || 0;
+    if (Date.now() - lastScan < SCAN_COOLDOWN_MS) {
+      return; // silently ignore — same QR scanned too recently
+    }
+    scanCooldownRef.current.set(cooldownKey, Date.now());
+
     processingRef.current = true;
 
     const activeScanner = scannerRef.current;
