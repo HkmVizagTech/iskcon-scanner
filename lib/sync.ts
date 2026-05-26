@@ -8,6 +8,8 @@ class SyncService {
   private isSyncing = false;
 
   start() {
+    // FIX: guard against double-start (component remount / hot reload)
+    if (this.syncTimer !== null) return;
     this.sync();
     this.syncTimer = setInterval(() => { this.sync(); }, SYNC_INTERVAL);
     window.addEventListener("online", () => { this.sync(); });

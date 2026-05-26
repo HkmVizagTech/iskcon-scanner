@@ -32,6 +32,7 @@ export default function ScanPage() {
   const router = useRouter();
   const [volunteerName, setVolunteerName] = useState("");
   const [assignedStations, setAssignedStations] = useState<AssignedStation[]>([]);
+  const [festivalName, setFestivalName] = useState(""); // FIX: show festival name on scanner
   const [selectedStation, setSelectedStation] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
   const [isOnline, setIsOnline] = useState(true);
@@ -261,6 +262,13 @@ export default function ScanPage() {
     setVolunteerName(name || "Volunteer");
     setIsOnline(navigator.onLine);
 
+    // FIX: load and display festival name(s) so volunteer knows which event they're scanning for
+    const storedEvents = JSON.parse(localStorage.getItem("assignedEvents") || "[]");
+    if (storedEvents.length > 0) {
+      const names = storedEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
+      setFestivalName(names.join(" • "));
+    }
+
     // FIX: always apply stations on mount — this auto-selects the first one
     applyStations(storedStations);
 
@@ -279,8 +287,14 @@ export default function ScanPage() {
         const freshStations: AssignedStation[] = data.volunteer?.assignedEntryPoints || [];
         if (freshStations.length > 0) {
           localStorage.setItem("assignedEntryPoints", JSON.stringify(freshStations));
-          // FIX: use applyStations so selection logic is consistent
           applyStations(freshStations);
+          // FIX: update festival name from server refresh too
+          const freshEvents = data.volunteer?.assignedEvents || [];
+          if (freshEvents.length > 0) {
+            localStorage.setItem("assignedEvents", JSON.stringify(freshEvents));
+            const names = freshEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
+            setFestivalName(names.join(" • "));
+          }
           const freshName = data.volunteer?.name;
           if (freshName) {
             localStorage.setItem("volunteerName", freshName);
@@ -351,6 +365,7 @@ export default function ScanPage() {
     localStorage.removeItem("scannerToken");
     localStorage.removeItem("volunteerName");
     localStorage.removeItem("assignedEntryPoints");
+    localStorage.removeItem("assignedEvents");
     router.push("/");
   };
 
@@ -377,6 +392,11 @@ export default function ScanPage() {
             <div className="font-bold text-sm text-white truncate">
               {selectedStationData?.stationLabel || assignedStations[0]?.stationLabel || "Scanner"}
             </div>
+            {festivalName && (
+              <div className="text-[10px] text-white/90 font-medium truncate">
+                🕉️ {festivalName}
+              </div>
+            )}
             <div className="text-[10px] text-white/70 flex items-center justify-center gap-1">
               {volunteerName}
               {isOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3 opacity-60" />}
