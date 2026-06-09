@@ -250,7 +250,7 @@ export default function ScanPage() {
 
     const stationId = selectedStationRef.current;
     if (!stationId) {
-      setLastResult({ success: false, message: "Select a station first" });
+      toast.error("Select a station first");
       return;
     }
 
@@ -279,6 +279,8 @@ export default function ScanPage() {
         return;
       }
 
+      toast("Scanning...", { icon: "⏳", duration: 1500 });
+
       const res = await fetch(`${API_URL}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -291,6 +293,9 @@ export default function ScanPage() {
         }),
       });
       const result = await res.json();
+      if (!res.ok && !result.success) {
+        console.error("Scan API error:", res.status, result);
+      }
       setLastResult(result);
       if (result.success) {
         setScanCount((p) => p + count);
@@ -299,7 +304,8 @@ export default function ScanPage() {
         navigator.vibrate?.([100, 100, 100]);
       }
       setShowGroupInput(false);
-    } catch (err) {
+    } catch (err: any) {
+      console.error("Scan fetch error:", err);
       // Offline — save locally
       try {
         await saveScan({
