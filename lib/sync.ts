@@ -50,14 +50,14 @@ class SyncService {
       const response = await api.syncOfflineScans(scansToSync);
 
       if (response.success) {
-        // FIX: Use the server's syncedIds list to mark exactly the right records,
-        // not "the first N by index" which broke when records partially failed.
+        // FIX: Use the actual clientScanId stored in each record to match
+        // against the server's syncedIds list. Was using `scan-${scan.id}` which
+        // never matched the UUID-style clientScanId, so scans were never marked synced.
         const syncedClientIds: string[] = response.syncedIds || [];
 
         if (syncedClientIds.length > 0) {
-          // Map client IDs back to IndexedDB numeric IDs
           const syncedDbIds = unsyncedScans
-            .filter((scan) => syncedClientIds.includes(`scan-${scan.id}`))
+            .filter((scan) => syncedClientIds.includes(scan.clientScanId))
             .map((scan) => scan.id!);
 
           await markScansAsSynced(syncedDbIds);
