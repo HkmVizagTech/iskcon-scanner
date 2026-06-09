@@ -17,6 +17,9 @@ interface AssignedStation {
   stationLabel: string;
   type: string;
   allowGroupCount?: boolean;
+  eventId?: string;
+  eventName?: string;
+  eventCode?: string;
 }
 
 function isTokenExpired(token: string): boolean {
@@ -434,7 +437,7 @@ export default function ScanPage() {
             >
               {assignedStations.map((station) => (
                 <option key={station._id} value={station._id} className="text-gray-900">
-                  {station.stationLabel}{station.allowGroupCount ? " 👨‍👩‍👧‍👦" : ""}
+                  {station.eventCode ? `[${station.eventCode}] ` : ""}{station.stationLabel}{station.allowGroupCount ? " 👨‍👩‍👧‍👦" : ""}
                 </option>
               ))}
             </select>
