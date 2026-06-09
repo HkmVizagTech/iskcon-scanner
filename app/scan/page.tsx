@@ -35,7 +35,9 @@ export default function ScanPage() {
   const router = useRouter();
   const [volunteerName, setVolunteerName] = useState("");
   const [assignedStations, setAssignedStations] = useState<AssignedStation[]>([]);
-  const [festivalName, setFestivalName] = useState(""); // FIX: show festival name on scanner
+  const [assignedEvents, setAssignedEvents] = useState<any[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState(""); // event filter for stations
+  const [festivalName, setFestivalName] = useState("");
   const [selectedStation, setSelectedStation] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
   const [isOnline, setIsOnline] = useState(true);
@@ -62,6 +64,32 @@ export default function ScanPage() {
   const scanCooldownRef = useRef<Map<string, number>>(new Map());
   const SCAN_COOLDOWN_MS = 8000;
 
+  // Stations shown in the dropdown = only those belonging to the selected event
+  // (dedup by _id as a final safety net)
+  const visibleStations = (() => {
+    const pool = selectedEvent
+      ? assignedStations.filter((s) => (s.eventId || "") === selectedEvent)
+      : assignedStations;
+    const seen = new Set<string>();
+    return pool.filter((s) => {
+      if (seen.has(s._id)) return false;
+      seen.add(s._id);
+      return true;
+    });
+  })();
+
+  // When the selected event changes, auto-select the first station of that event
+  useEffect(() => {
+    if (visibleStations.length === 0) { setSelectedStation(""); return; }
+    setSelectedStation((prev) => {
+      if (prev && visibleStations.some((s) => s._id === prev)) return prev;
+      const first = visibleStations[0];
+      setStationAllowsGroup(first.allowGroupCount ?? false);
+      return first._id;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEvent, assignedStations]);
+
   useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
   useEffect(() => { assignedStationsRef.current = assignedStations; }, [assignedStations]);
   useEffect(() => { groupCountRef.current = groupCount; }, [groupCount]);
@@ -72,6 +100,22 @@ export default function ScanPage() {
   // FIX: extracted so both the initial load and refreshAssignments use the same logic.
   // Previously: only auto-selected if exactly 1 station → multiple stations = no selection
   // Now: always auto-select the first station; volunteer can change via dropdown
+  const applyStationsAndEvents = useCallback((stations: AssignedStation[], events: any[]) => {
+    setAssignedStations(stations);
+    setAssignedEvents(events || []);
+
+    // Auto-select event: keep current if valid, else pick the first event that has stations
+    setSelectedEvent((prevEvent) => {
+      const eventIdsWithStations = new Set(stations.map((s) => s.eventId).filter(Boolean));
+      if (prevEvent && eventIdsWithStations.has(prevEvent)) return prevEvent;
+      // pick first event (from events list) that has stations, else first station's event
+      const firstEvt = (events || []).find((e) => eventIdsWithStations.has(e._id))?._id
+        || stations[0]?.eventId
+        || "";
+      return firstEvt;
+    });
+  }, []);
+
   const applyStations = useCallback((stations: AssignedStation[]) => {
     if (stations.length === 0) return;
     setAssignedStations(stations);
@@ -272,8 +316,8 @@ export default function ScanPage() {
       setFestivalName(names.join(" • "));
     }
 
-    // FIX: always apply stations on mount — this auto-selects the first one
-    applyStations(storedStations);
+    // Apply stored stations + events on mount
+    applyStationsAndEvents(storedStations, storedEvents);
 
     syncService.start();
 
@@ -297,15 +341,9 @@ export default function ScanPage() {
         localStorage.setItem("assignedEntryPoints", JSON.stringify(freshStations));
         localStorage.setItem("assignedEvents", JSON.stringify(freshEvents));
 
-        // Replace stations entirely (handles removed/past-event stations)
-        setAssignedStations(freshStations);
+        // Replace stations + events entirely (server is source of truth)
+        applyStationsAndEvents(freshStations, freshEvents);
         assignedStationsRef.current = freshStations;
-
-        // Re-validate the selected station — reset if it no longer exists
-        setSelectedStation((prev) => {
-          if (prev && freshStations.some((s) => s._id === prev)) return prev;
-          return freshStations.length > 0 ? freshStations[0]._id : "";
-        });
 
         // Update festival name
         const names = freshEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
@@ -352,7 +390,7 @@ export default function ScanPage() {
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [applyStations]);
+  }, [applyStationsAndEvents]);
 
   // Start scanner once both cameraId AND selectedStation are ready
   useEffect(() => {
@@ -399,6 +437,7 @@ export default function ScanPage() {
   };
 
   const selectedStationData = assignedStations.find((s) => s._id === selectedStation);
+  const selectedEventData = assignedEvents.find((e) => e._id === selectedEvent);
 
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col">
@@ -412,9 +451,9 @@ export default function ScanPage() {
             <div className="font-bold text-sm text-white truncate">
               {selectedStationData?.stationLabel || assignedStations[0]?.stationLabel || "Scanner"}
             </div>
-            {festivalName && (
+            {(selectedEventData?.name || festivalName) && (
               <div className="text-[10px] text-white/90 font-medium truncate">
-                🕉️ {festivalName}
+                🕉️ {selectedEventData?.name || festivalName}
               </div>
             )}
             <div className="text-[10px] text-white/70 flex items-center justify-center gap-1">
@@ -427,17 +466,36 @@ export default function ScanPage() {
           </div>
         </div>
 
-        {/* Station selector — shown always so volunteer can switch */}
-        {assignedStations.length > 1 && (
+        {/* Event selector — only when assigned to more than one event */}
+        {assignedEvents.length > 1 && (
           <div className="px-3 pb-2">
+            <label className="block text-[10px] text-white/70 mb-1">Festival / Event</label>
+            <select
+              value={selectedEvent}
+              onChange={(e) => setSelectedEvent(e.target.value)}
+              className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
+            >
+              {assignedEvents.map((ev) => (
+                <option key={ev._id} value={ev._id} className="text-gray-900">
+                  🕉️ {ev.name || ev.eventCode}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Station selector — only stations for the selected event */}
+        {visibleStations.length > 1 && (
+          <div className="px-3 pb-2">
+            <label className="block text-[10px] text-white/70 mb-1">Station</label>
             <select
               value={selectedStation}
               onChange={(e) => handleStationChange(e.target.value)}
               className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
             >
-              {assignedStations.map((station) => (
+              {visibleStations.map((station) => (
                 <option key={station._id} value={station._id} className="text-gray-900">
-                  {station.eventCode ? `[${station.eventCode}] ` : ""}{station.stationLabel}{station.allowGroupCount ? " 👨‍👩‍👧‍👦" : ""}
+                  {station.stationLabel}{station.allowGroupCount ? " 👨‍👩‍👧‍👦" : ""}
                 </option>
               ))}
             </select>
