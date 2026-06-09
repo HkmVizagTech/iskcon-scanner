@@ -116,46 +116,80 @@ export default function ScanPage() {
         return;
       }
       if (!res.ok) {
-        // Server error — keep whatever we have, stop the spinner
+        // Server error — try fallback from login data in localStorage
+        console.error("loadAssignments: server returned", res.status);
+        const fallbackStations = tryLocalStorageFallback();
+        if (fallbackStations) return;
+        toast.error(`Server error (${res.status}). Tap Retry.`);
         setLoading(false);
         return;
       }
 
       const data = await res.json();
-      const freshStations: Station[] = (data.volunteer?.assignedEntryPoints || []).map((s: any) => ({
-        ...s,
-        _id: String(s._id),
-        eventId: String(s.eventId || ""),
-      }));
-      const freshEvents: EventInfo[] = (data.volunteer?.assignedEvents || []).map((e: any) => ({
-        ...e,
-        _id: String(e._id),
-      }));
-
-      setStations(freshStations);
-      setEvents(freshEvents);
-      setVolunteerName(data.volunteer?.name || "Volunteer");
-
-      // Pick an event: keep current if still valid, else first event that has stations
-      setSelectedEvent((prev) => {
-        const eventIdsWithStations = new Set(freshStations.map((s) => s.eventId));
-        if (prev && eventIdsWithStations.has(prev)) return prev;
-        return freshEvents.find((e) => eventIdsWithStations.has(e._id))?._id
-          || freshStations[0]?.eventId
-          || "";
-      });
-
-      setLoading(false);
-
-      if (freshStations.length === 0) {
-        toast.error("No active stations assigned to you. Contact your admin.");
-      }
+      applyVolunteerData(data.volunteer);
     } catch (err) {
-      // Network error — stop spinner, let them retry
-      setLoading(false);
+      console.error("loadAssignments fetch error:", err);
+      // Network error — try fallback from login data
+      const fallbackStations = tryLocalStorageFallback();
+      if (fallbackStations) return;
       toast.error("Could not load stations. Check your connection.");
+      setLoading(false);
     }
   }, [router]);
+
+  // Fallback: use data saved by the login page in localStorage
+  const tryLocalStorageFallback = useCallback(() => {
+    try {
+      const savedStations = localStorage.getItem("assignedEntryPoints");
+      const savedEvents = localStorage.getItem("assignedEvents");
+      if (savedStations) {
+        const parsed = JSON.parse(savedStations);
+        if (parsed.length > 0) {
+          applyVolunteerData({
+            name: localStorage.getItem("volunteerName") || "Volunteer",
+            assignedEntryPoints: parsed,
+            assignedEvents: savedEvents ? JSON.parse(savedEvents) : [],
+          });
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }, []);
+
+  // Common function to apply volunteer data from either /me or localStorage
+  const applyVolunteerData = useCallback((volunteer: any) => {
+    if (!volunteer) { setLoading(false); return; }
+
+    const freshStations: Station[] = (volunteer.assignedEntryPoints || []).map((s: any) => ({
+      ...s,
+      _id: String(s._id),
+      eventId: String(s.eventId || ""),
+    }));
+    const freshEvents: EventInfo[] = (volunteer.assignedEvents || []).map((e: any) => ({
+      ...e,
+      _id: String(e._id),
+    }));
+
+    setStations(freshStations);
+    setEvents(freshEvents);
+    setVolunteerName(volunteer.name || localStorage.getItem("volunteerName") || "Volunteer");
+
+    // Pick an event: keep current if still valid, else first event that has stations
+    setSelectedEvent((prev) => {
+      const eventIdsWithStations = new Set(freshStations.map((s) => s.eventId));
+      if (prev && eventIdsWithStations.has(prev)) return prev;
+      return freshEvents.find((e) => eventIdsWithStations.has(e._id))?._id
+        || freshStations[0]?.eventId
+        || "";
+    });
+
+    setLoading(false);
+
+    if (freshStations.length === 0) {
+      toast.error("No active stations assigned to you. Contact your admin.");
+    }
+  }, []);
 
   // When the selected event changes, auto-pick its first station
   useEffect(() => {
