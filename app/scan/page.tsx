@@ -284,22 +284,39 @@ export default function ScanPage() {
         });
         if (!res.ok) return;
         const data = await res.json();
+        // FIX: server is the source of truth. Always replace local stations with the
+        // server's filtered list — even if it's empty. Previously we only updated when
+        // freshStations.length > 0, so stale past-event stations from a pre-fix login
+        // stayed in localStorage and kept showing in the dropdown.
         const freshStations: AssignedStation[] = data.volunteer?.assignedEntryPoints || [];
-        if (freshStations.length > 0) {
-          localStorage.setItem("assignedEntryPoints", JSON.stringify(freshStations));
-          applyStations(freshStations);
-          // FIX: update festival name from server refresh too
-          const freshEvents = data.volunteer?.assignedEvents || [];
-          if (freshEvents.length > 0) {
-            localStorage.setItem("assignedEvents", JSON.stringify(freshEvents));
-            const names = freshEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
-            setFestivalName(names.join(" • "));
-          }
-          const freshName = data.volunteer?.name;
-          if (freshName) {
-            localStorage.setItem("volunteerName", freshName);
-            setVolunteerName(freshName);
-          }
+        const freshEvents = data.volunteer?.assignedEvents || [];
+
+        localStorage.setItem("assignedEntryPoints", JSON.stringify(freshStations));
+        localStorage.setItem("assignedEvents", JSON.stringify(freshEvents));
+
+        // Replace stations entirely (handles removed/past-event stations)
+        setAssignedStations(freshStations);
+        assignedStationsRef.current = freshStations;
+
+        // Re-validate the selected station — reset if it no longer exists
+        setSelectedStation((prev) => {
+          if (prev && freshStations.some((s) => s._id === prev)) return prev;
+          return freshStations.length > 0 ? freshStations[0]._id : "";
+        });
+
+        // Update festival name
+        const names = freshEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
+        setFestivalName(names.join(" • "));
+
+        const freshName = data.volunteer?.name;
+        if (freshName) {
+          localStorage.setItem("volunteerName", freshName);
+          setVolunteerName(freshName);
+        }
+
+        // If no stations remain, send the volunteer back to login with a message
+        if (freshStations.length === 0) {
+          toast.error("No active event stations assigned to you.");
         }
       } catch (_) {}
     };
