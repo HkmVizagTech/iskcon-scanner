@@ -67,13 +67,20 @@ export default function ScanPage() {
   // Stations shown in the dropdown = only those belonging to the selected event
   // (dedup by _id as a final safety net)
   const visibleStations = (() => {
+    // FIX: compare as strings — eventId may come as ObjectId object or string
     const pool = selectedEvent
-      ? assignedStations.filter((s) => (s.eventId || "") === selectedEvent)
+      ? assignedStations.filter((s) => {
+          const sid = typeof s.eventId === "object" && s.eventId !== null
+            ? (s.eventId as any)._id || String(s.eventId)
+            : String(s.eventId || "");
+          return sid === selectedEvent;
+        })
       : assignedStations;
     const seen = new Set<string>();
     return pool.filter((s) => {
-      if (seen.has(s._id)) return false;
-      seen.add(s._id);
+      const id = String(s._id);
+      if (seen.has(id)) return false;
+      seen.add(id);
       return true;
     });
   })();
@@ -101,18 +108,29 @@ export default function ScanPage() {
   // Previously: only auto-selected if exactly 1 station → multiple stations = no selection
   // Now: always auto-select the first station; volunteer can change via dropdown
   const applyStationsAndEvents = useCallback((stations: AssignedStation[], events: any[]) => {
-    setAssignedStations(stations);
-    setAssignedEvents(events || []);
+    // FIX: normalise all eventId values to plain strings immediately
+    const normalised = stations.map((s) => ({
+      ...s,
+      eventId: s.eventId
+        ? (typeof s.eventId === "object" ? (s.eventId as any)._id || String(s.eventId) : String(s.eventId))
+        : "",
+    }));
+    const normEvents = (events || []).map((e) => ({
+      ...e,
+      _id: String(e._id),
+    }));
 
-    // Auto-select event: keep current if valid, else pick the first event that has stations
+    setAssignedStations(normalised);
+    setAssignedEvents(normEvents);
+
+    // Auto-select the first event that has stations
     setSelectedEvent((prevEvent) => {
-      const eventIdsWithStations = new Set(stations.map((s) => s.eventId).filter(Boolean));
+      const eventIdsWithStations = new Set(normalised.map((s) => s.eventId).filter(Boolean));
       if (prevEvent && eventIdsWithStations.has(prevEvent)) return prevEvent;
-      // pick first event (from events list) that has stations, else first station's event
-      const firstEvt = (events || []).find((e) => eventIdsWithStations.has(e._id))?._id
-        || stations[0]?.eventId
+      const firstEvt = normEvents.find((e) => eventIdsWithStations.has(e._id))?._id
+        || normalised[0]?.eventId
         || "";
-      return firstEvt;
+      return String(firstEvt);
     });
   }, []);
 
