@@ -75,16 +75,19 @@ export default function ScanPage() {
   useEffect(() => { groupCountRef.current = groupCount; }, [groupCount]);
   useEffect(() => { cameraIdRef.current = cameraId; }, [cameraId]);
 
-  // Stations visible for the currently selected event, deduped by _id
+  // Stations visible for the currently selected event, deduped by _id.
+  // If selectedEvent is not yet set (initial load), show all stations as a fallback
+  // so the dropdown is never unexpectedly empty.
   const visibleStations = (() => {
     const seen = new Set<string>();
-    return stations
-      .filter((s) => String(s.eventId) === String(selectedEvent))
-      .filter((s) => {
-        if (seen.has(s._id)) return false;
-        seen.add(s._id);
-        return true;
-      });
+    const pool = selectedEvent
+      ? stations.filter((s) => String(s.eventId) === String(selectedEvent))
+      : stations;
+    return pool.filter((s) => {
+      if (seen.has(s._id)) return false;
+      seen.add(s._id);
+      return true;
+    });
   })();
 
   const selectedStationData = stations.find((s) => s._id === selectedStation);
