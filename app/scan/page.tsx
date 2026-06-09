@@ -37,7 +37,6 @@ export default function ScanPage() {
   const [assignedStations, setAssignedStations] = useState<AssignedStation[]>([]);
   const [assignedEvents, setAssignedEvents] = useState<any[]>([]);
   const [selectedEvent, setSelectedEvent] = useState(""); // event filter for stations
-  const [serverSynced, setServerSynced] = useState(false); // true after /me refresh
   const [festivalName, setFestivalName] = useState("");
   const [selectedStation, setSelectedStation] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
@@ -303,6 +302,18 @@ export default function ScanPage() {
       return;
     }
 
+    // FIX: if stored stations are in old format (no eventId field), force re-login
+    // Old format was saved before backend added eventId to the response.
+    // Without eventId, station filtering cannot work — must get fresh data.
+    const hasOldFormat = storedStations.some((s: any) => !s.eventId);
+    if (hasOldFormat) {
+      localStorage.removeItem("assignedEntryPoints");
+      localStorage.removeItem("assignedEvents");
+      toast.error("Please log in again to update your station assignments.");
+      router.push("/");
+      return;
+    }
+
     setVolunteerName(name || "Volunteer");
     setIsOnline(navigator.onLine);
 
@@ -341,7 +352,6 @@ export default function ScanPage() {
         // Replace stations + events entirely (server is source of truth)
         applyStationsAndEvents(freshStations, freshEvents);
         assignedStationsRef.current = freshStations;
-        setServerSynced(true); // stations now have eventId from server
 
         // Update festival name
         const names = freshEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
@@ -464,16 +474,8 @@ export default function ScanPage() {
           </div>
         </div>
 
-        {/* Show spinner until server has confirmed station list with eventId */}
-        {!serverSynced && assignedStations.length > 0 && (
-          <div className="px-3 pb-2 flex items-center gap-2">
-            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            <span className="text-[10px] text-white/70">Loading stations...</span>
-          </div>
-        )}
-
         {/* Event selector — only when assigned to more than one event */}
-        {serverSynced && assignedEvents.length > 1 && (
+        {assignedEvents.length > 1 && (
           <div className="px-3 pb-2">
             <label className="block text-[10px] text-white/70 mb-1">Festival / Event</label>
             <select
@@ -491,7 +493,7 @@ export default function ScanPage() {
         )}
 
         {/* Station selector — only stations for the selected event */}
-        {serverSynced && visibleStations.length > 1 && (
+        {visibleStations.length > 1 && (
           <div className="px-3 pb-2">
             <label className="block text-[10px] text-white/70 mb-1">Station</label>
             <select
