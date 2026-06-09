@@ -37,6 +37,7 @@ export default function ScanPage() {
   const [assignedStations, setAssignedStations] = useState<AssignedStation[]>([]);
   const [assignedEvents, setAssignedEvents] = useState<any[]>([]);
   const [selectedEvent, setSelectedEvent] = useState(""); // event filter for stations
+  const [serverSynced, setServerSynced] = useState(false); // true after /me refresh
   const [festivalName, setFestivalName] = useState("");
   const [selectedStation, setSelectedStation] = useState("");
   const [lastResult, setLastResult] = useState<any>(null);
@@ -340,6 +341,7 @@ export default function ScanPage() {
         // Replace stations + events entirely (server is source of truth)
         applyStationsAndEvents(freshStations, freshEvents);
         assignedStationsRef.current = freshStations;
+        setServerSynced(true); // stations now have eventId from server
 
         // Update festival name
         const names = freshEvents.map((e: any) => e.name || e.eventCode || "").filter(Boolean);
@@ -462,8 +464,16 @@ export default function ScanPage() {
           </div>
         </div>
 
+        {/* Show spinner until server has confirmed station list with eventId */}
+        {!serverSynced && assignedStations.length > 0 && (
+          <div className="px-3 pb-2 flex items-center gap-2">
+            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            <span className="text-[10px] text-white/70">Loading stations...</span>
+          </div>
+        )}
+
         {/* Event selector — only when assigned to more than one event */}
-        {assignedEvents.length > 1 && (
+        {serverSynced && assignedEvents.length > 1 && (
           <div className="px-3 pb-2">
             <label className="block text-[10px] text-white/70 mb-1">Festival / Event</label>
             <select
@@ -481,7 +491,7 @@ export default function ScanPage() {
         )}
 
         {/* Station selector — only stations for the selected event */}
-        {visibleStations.length > 1 && (
+        {serverSynced && visibleStations.length > 1 && (
           <div className="px-3 pb-2">
             <label className="block text-[10px] text-white/70 mb-1">Station</label>
             <select
