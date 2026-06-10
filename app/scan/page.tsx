@@ -622,6 +622,31 @@ export default function ScanPage() {
           <button onClick={handleExit} className="flex-1 py-2.5 text-gray-600 font-medium rounded-lg bg-white text-sm border border-gray-300">Exit</button>
           <button onClick={handleContinue} className="flex-1 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white font-medium rounded-lg text-sm">Continue</button>
         </div>
+        {/* Debug: test scan without camera */}
+        <button
+          onClick={async () => {
+            const token = localStorage.getItem("scannerToken");
+            const stationId = selectedStationRef.current || visibleStations[0]?._id;
+            if (!token) { toast.error("No token"); return; }
+            if (!stationId) { toast.error("No station"); return; }
+            toast("Testing scan API...", { icon: "🧪" });
+            try {
+              const r = await fetch(`${API_URL}/scan`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ qrData: "test-invalid-qr", epId: stationId, stationLabel: "test", groupCount: 1, clientScanId: `test-${Date.now()}` }),
+              });
+              const data = await r.json();
+              toast(`API responded: ${r.status} — ${data.message || data.error || JSON.stringify(data).slice(0, 80)}`, { duration: 5000 });
+              setLastResult(data);
+            } catch (e: any) {
+              toast.error(`Fetch failed: ${e.message}`, { duration: 5000 });
+            }
+          }}
+          className="w-full mt-2 py-2 text-xs text-gray-400 border border-dashed border-gray-300 rounded-lg"
+        >
+          🧪 Test Scan (bypass camera)
+        </button>
       </div>
 
       <style jsx global>{`
