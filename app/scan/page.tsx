@@ -27,6 +27,58 @@ interface EventInfo {
   eventCode?: string;
 }
 
+
+// ─── Result presentation: distinct look/sound/vibration per outcome ──────────
+function getResultPresentation(r: any) {
+  const result = r?.result || (r?.success ? "granted" : "invalid");
+  switch (result) {
+    case "granted":
+      return { title: "Access Granted", emoji: "✅", bg: "bg-green-50", ring: "bg-green-500", text: "text-green-900", sub: "text-green-800", vibrate: [200], sound: "success" };
+    case "offline_saved":
+      return { title: "Saved Offline", emoji: "📥", bg: "bg-blue-50", ring: "bg-blue-500", text: "text-blue-900", sub: "text-blue-800", vibrate: [200], sound: "success" };
+    case "duplicate":
+      return { title: "Already Scanned", emoji: "🔁", bg: "bg-yellow-50", ring: "bg-yellow-500", text: "text-yellow-900", sub: "text-yellow-800", vibrate: [100, 80, 100], sound: "warn" };
+    case "already_used":
+      return { title: "Already Scanned Here", emoji: "🔁", bg: "bg-yellow-50", ring: "bg-yellow-500", text: "text-yellow-900", sub: "text-yellow-800", vibrate: [100, 80, 100], sound: "warn" };
+    case "expired":
+      return { title: "Pass Expired", emoji: "⌛", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
+    case "not_yet_valid":
+      return { title: "Event Not Started", emoji: "🕐", bg: "bg-orange-50", ring: "bg-orange-500", text: "text-orange-900", sub: "text-orange-700", vibrate: [120, 80, 120], sound: "warn" };
+    case "revoked":
+      return { title: "Pass Revoked", emoji: "🚫", bg: "bg-red-50", ring: "bg-red-600", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
+    case "not_included":
+      return { title: "Wrong Station", emoji: "↪️", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
+    case "capacity_full":
+      return { title: "Capacity Full", emoji: "🈵", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
+    case "link_required":
+      return { title: "Scan Prerequisite First", emoji: "🔗", bg: "bg-orange-50", ring: "bg-orange-500", text: "text-orange-900", sub: "text-orange-700", vibrate: [120, 80, 120], sound: "warn" };
+    default:
+      return { title: "Access Denied", emoji: "❌", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
+  }
+}
+
+// Simple beep via WebAudio — distinct tones for success / warn / error
+let audioCtx: AudioContext | null = null;
+function playBeep(kind: "success" | "warn" | "error") {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const ctx = audioCtx;
+    const beep = (freq: number, start: number, dur: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.25, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur);
+    };
+    if (kind === "success") { beep(880, 0, 0.12); beep(1320, 0.13, 0.15); }       // rising chirp
+    else if (kind === "warn") { beep(600, 0, 0.15); beep(600, 0.2, 0.15); }        // double mid tone
+    else { beep(280, 0, 0.25); beep(220, 0.28, 0.3); }                              // low falling buzz
+  } catch (_) {}
+}
+
 function isTokenExpired(token: string): boolean {
   try {
     const payload = JSON.parse(atob(token.split(".")[1]));
@@ -68,9 +120,11 @@ export default function ScanPage() {
   const groupCountRef = useRef(1);
   const cameraIdRef = useRef("");
   const cooldownRef = useRef<Map<string, number>>(new Map());
+  const lastResultRef = useRef<any>(null);
   const COOLDOWN_MS = 8000;
 
   useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
+  useEffect(() => { lastResultRef.current = lastResult; }, [lastResult]);
   useEffect(() => { stationsRef.current = stations; }, [stations]);
   useEffect(() => { groupCountRef.current = groupCount; }, [groupCount]);
   useEffect(() => { cameraIdRef.current = cameraId; }, [cameraId]);
@@ -318,15 +372,27 @@ export default function ScanPage() {
           synced: false,
         });
       } catch (_) {}
-      setLastResult({ success: true, result: "offline_saved", message: "Saved offline — will sync", holderName: "" });
-      navigator.vibrate?.(200);
+      const offlineResult = { success: true, result: "offline_saved", message: "Saved offline — will sync when connected", holderName: "" };
+      setLastResult(offlineResult);
+      lastResultRef.current = offlineResult;
+      const pres = getResultPresentation(offlineResult);
+      navigator.vibrate?.(pres.vibrate);
+      playBeep(pres.sound as any);
     }
 
+    // Auto-resume timing: success = 2s, duplicate = 1s (fast flow),
+    // denied = 3.5s so the volunteer can read the reason
+    const lastR = lastResultRef.current;
+    const resumeDelay = (() => {
+      if (lastR?.result === "duplicate") return 1000;
+      if (lastR?.success) return 2000;
+      return 3500;
+    })();
     resultTimerRef.current = setTimeout(() => {
       setLastResult(null);
       processingRef.current = false;
       if (cameraIdRef.current) startScanner(cameraIdRef.current);
-    }, 2000);
+    }, resumeDelay);
   };
 
   // ─── Mount ─────────────────────────────────────────────────────────────────
@@ -500,21 +566,31 @@ export default function ScanPage() {
           </div>
         )}
 
-        {lastResult && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-            <div className={`w-full max-w-[260px] rounded-2xl p-6 text-center shadow-xl ${lastResult.success ? "bg-green-50" : "bg-red-50"}`}>
-              <div className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3 ${lastResult.success ? "bg-green-500" : "bg-red-500"}`}>
-                {lastResult.success ? <CheckCircle className="w-7 h-7 text-white" /> : <XCircle className="w-7 h-7 text-white" />}
+        {lastResult && (() => {
+          const pres = getResultPresentation(lastResult);
+          const holderName = lastResult.holderName || lastResult.holder_name || "";
+          return (
+            <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+              <div className={`w-full max-w-[280px] rounded-2xl p-6 text-center shadow-xl ${pres.bg}`}>
+                <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3 ${pres.ring}`}>
+                  <span className="text-3xl">{pres.emoji}</span>
+                </div>
+                <h2 className={`text-xl font-bold mb-1 ${pres.text}`}>{pres.title}</h2>
+                {holderName && (
+                  <p className={`text-lg font-semibold truncate ${pres.sub}`}>{holderName}</p>
+                )}
+                {lastResult.message && lastResult.message !== "Access granted" && (
+                  <p className={`text-sm mt-1 ${pres.sub}`}>{lastResult.message}</p>
+                )}
+                {lastResult.success && lastResult.groupCount > 1 && (
+                  <p className={`text-sm mt-2 font-medium ${pres.sub}`}>
+                    👨‍👩‍👧‍👦 {lastResult.groupCount} people
+                  </p>
+                )}
               </div>
-              <h2 className={`text-lg font-bold mb-1 ${lastResult.success ? "text-green-900" : "text-red-900"}`}>
-                {lastResult.success ? "Access Granted" : "Access Denied"}
-              </h2>
-              {lastResult.success
-                ? <p className="text-base text-green-800 font-medium truncate">{lastResult.holderName || lastResult.holder_name || ""}</p>
-                : <p className="text-sm text-red-700">{lastResult.message}</p>}
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Group count modal */}
