@@ -122,8 +122,9 @@ export default function ScanPage() {
   const cooldownRef = useRef<Map<string, number>>(new Map());
   const cooldownNoticeRef = useRef<Map<string, number>>(new Map()); // throttles "already scanned" toast
   const watchdogRef = useRef<NodeJS.Timeout | null>(null); // force-recovers a stuck scanner
+  const busyNoticeRef = useRef(0); // throttles "finishing previous scan" toast
   const lastResultRef = useRef<any>(null);
-  const COOLDOWN_MS = 8000;
+  const COOLDOWN_MS = 5000;
 
   useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
   useEffect(() => { lastResultRef.current = lastResult; }, [lastResult]);
@@ -261,6 +262,18 @@ export default function ScanPage() {
   const onScanRef = useRef<(text: string) => Promise<void>>(async () => {});
   const stableCallback = useRef((text: string) => { onScanRef.current(text); }).current;
 
+  // Resume decoding after a result. Falls back to a full restart if the
+  // paused scanner was torn down (tab switch, camera change, etc).
+  const resumeScanning = useCallback(() => {
+    try {
+      scannerRef.current?.resume();
+      setIsScanning(true);
+    } catch (_) {
+      if (cameraIdRef.current) startScanner(cameraIdRef.current);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const startScanner = useCallback(async (camId: string) => {
     if (!camId) return;
     if (scannerRef.current) {
@@ -302,7 +315,14 @@ export default function ScanPage() {
 
   // ─── Scan handler ────────────────────────────────────────────────────────
   onScanRef.current = async (decodedText: string) => {
-    if (processingRef.current) return;
+    if (processingRef.current) {
+      const nowB = Date.now();
+      if (nowB - busyNoticeRef.current > 2000) {
+        busyNoticeRef.current = nowB;
+        toast("Hold on — finishing previous scan", { icon: "⏳", duration: 1200 });
+      }
+      return;
+    }
 
     const stationId = selectedStationRef.current;
     if (!stationId) {
@@ -333,15 +353,13 @@ export default function ScanPage() {
       if (processingRef.current) {
         processingRef.current = false;
         setLastResult(null);
-        if (cameraIdRef.current) startScanner(cameraIdRef.current);
+        resumeScanning();
         toast.error("Scanner recovered — please scan again");
       }
     }, 15000);
 
-    const active = scannerRef.current;
-    scannerRef.current = null;
-    setIsScanning(false);
-    try { await active?.stop(); } catch (_) {}
+    // PAUSE decoding only — keep the camera stream alive for instant resume
+    try { scannerRef.current?.pause(true); } catch (_) {}
 
     const station = stationsRef.current.find((s) => s._id === stationId);
     const count = station?.allowGroupCount ? groupCountRef.current : 1;
@@ -422,13 +440,13 @@ export default function ScanPage() {
         playBeep(pres.sound as any);
 
         const resumeDelay =
-          resultShown.result === "duplicate" ? 1000 :
-          resultShown.success ? 2000 : 3500;
+          resultShown.result === "duplicate" ? 800 :
+          resultShown.success ? 1300 : 3000;
         if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
         resultTimerRef.current = setTimeout(() => {
           setLastResult(null);
           processingRef.current = false;
-          if (cameraIdRef.current) startScanner(cameraIdRef.current);
+          resumeScanning();
         }, resumeDelay);
       }
       // If no resultShown we navigated to login — nothing to resume.
@@ -482,19 +500,19 @@ export default function ScanPage() {
     setCameraId(cameras[(idx + 1) % cameras.length].id);
   };
 
-  const handleEventChange = async (eventId: string) => {
-    await stopScanner();
+  const handleEventChange = (eventId: string) => {
     processingRef.current = false;
     setLastResult(null);
     setSelectedEvent(eventId);
+    resumeScanning(); // camera never stops — switching is instant
   };
 
-  const handleStationChange = async (stationId: string) => {
-    await stopScanner();
+  const handleStationChange = (stationId: string) => {
     processingRef.current = false;
     setLastResult(null);
     setGroupCount(1);
     setSelectedStation(stationId);
+    resumeScanning();
   };
 
   const handleExit = async () => {
@@ -510,7 +528,7 @@ export default function ScanPage() {
     if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
     setLastResult(null);
     processingRef.current = false;
-    if (cameraIdRef.current) startScanner(cameraIdRef.current);
+    resumeScanning();
   };
 
   // ─── Render ──────────────────────────────────────────────────────────────
@@ -618,6 +636,22 @@ export default function ScanPage() {
                 <h2 className={`text-xl font-bold mb-1 ${pres.text}`}>{pres.title}</h2>
                 {holderName && (
                   <p className={`text-lg font-semibold truncate ${pres.sub}`}>{holderName}</p>
+                )}
+                {(lastResult.subCategory || lastResult.categoryName) && (
+                  <div className="mt-2 flex items-center justify-center gap-2">
+                    {lastResult.subCategory && (
+                      <span className={`text-3xl font-black px-5 py-2 rounded-2xl border-2 shadow ${
+                        lastResult.subCategory === "A" ? "bg-amber-100 text-amber-800 border-amber-400" :
+                        lastResult.subCategory === "B" ? "bg-slate-100 text-slate-700 border-slate-400" :
+                        lastResult.subCategory === "C" ? "bg-orange-100 text-orange-800 border-orange-400" :
+                        "bg-purple-100 text-purple-800 border-purple-400"}`}>
+                        {lastResult.subCategory}
+                      </span>
+                    )}
+                    {lastResult.categoryName && (
+                      <span className={`text-sm font-medium ${pres.sub}`}>{lastResult.categoryName}</span>
+                    )}
+                  </div>
                 )}
                 {lastResult.message && lastResult.message !== "Access granted" && (
                   <p className={`text-sm mt-1 ${pres.sub}`}>{lastResult.message}</p>
