@@ -10,6 +10,13 @@ import { syncService } from "@/lib/sync";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
+interface SevaSlot {
+  code: string;
+  name: string;
+  time?: string;
+  displayLabel?: string;
+}
+
 interface Station {
   _id: string;
   name: string;
@@ -678,9 +685,17 @@ export default function ScanPage() {
                         {lastResult.subCategory}
                       </span>
                     )}
-                    {lastResult.categoryName && (
+                    {/* Show full seva slot name + time if available, else just category */}
+                    {lastResult.sevaSlot ? (
+                      <div className="text-center">
+                        <p className={`text-sm font-semibold ${pres.sub}`}>{lastResult.sevaSlot.name}</p>
+                        {lastResult.sevaSlot.time && (
+                          <p className={`text-xs mt-0.5 ${pres.sub} opacity-80`}>🕐 {lastResult.sevaSlot.time}</p>
+                        )}
+                      </div>
+                    ) : lastResult.categoryName ? (
                       <span className={`text-sm font-medium ${pres.sub}`}>{lastResult.categoryName}</span>
-                    )}
+                    ) : null}
                   </div>
                 )}
                 {lastResult.message && lastResult.message !== "Access granted" && (
