@@ -120,6 +120,8 @@ export default function ScanPage() {
   const groupCountRef = useRef(1);
   const cameraIdRef = useRef("");
   const cooldownRef = useRef<Map<string, number>>(new Map());
+  const cooldownNoticeRef = useRef<Map<string, number>>(new Map()); // throttles "already scanned" toast
+  const watchdogRef = useRef<NodeJS.Timeout | null>(null); // force-recovers a stuck scanner
   const lastResultRef = useRef<any>(null);
   const COOLDOWN_MS = 8000;
 
@@ -308,13 +310,34 @@ export default function ScanPage() {
       return;
     }
 
-    // Cooldown — same QR at same station within 8s is ignored
-    const key = `${decodedText.slice(-20)}::${stationId}`;
+    // ── Cooldown with FEEDBACK — never silent ──
+    const key = `${decodedText.slice(-24)}::${stationId}`;
+    const now = Date.now();
     const last = cooldownRef.current.get(key) || 0;
-    if (Date.now() - last < COOLDOWN_MS) return;
-    cooldownRef.current.set(key, Date.now());
+    if (now - last < COOLDOWN_MS) {
+      const lastNotice = cooldownNoticeRef.current.get(key) || 0;
+      if (now - lastNotice > 2500) {
+        cooldownNoticeRef.current.set(key, now);
+        toast("Already scanned — show the next pass", { icon: "🔁", duration: 1800 });
+        try { navigator.vibrate?.(80); } catch (_) {}
+      }
+      return;
+    }
+    cooldownRef.current.set(key, now);
 
     processingRef.current = true;
+
+    // ── WATCHDOG: whatever goes wrong below, the scanner recovers in 15s ──
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    watchdogRef.current = setTimeout(() => {
+      if (processingRef.current) {
+        processingRef.current = false;
+        setLastResult(null);
+        if (cameraIdRef.current) startScanner(cameraIdRef.current);
+        toast.error("Scanner recovered — please scan again");
+      }
+    }, 15000);
+
     const active = scannerRef.current;
     scannerRef.current = null;
     setIsScanning(false);
@@ -323,6 +346,7 @@ export default function ScanPage() {
     const station = stationsRef.current.find((s) => s._id === stationId);
     const count = station?.allowGroupCount ? groupCountRef.current : 1;
     const clientScanId = generateClientScanId();
+    let resultShown: any = null;
 
     try {
       const token = localStorage.getItem("scannerToken");
@@ -333,34 +357,47 @@ export default function ScanPage() {
         return;
       }
 
-      toast("Scanning...", { icon: "⏳", duration: 1500 });
+      toast("Verifying...", { icon: "⏳", duration: 1200 });
 
-      const res = await fetch(`${API_URL}/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          qrData: decodedText,
-          epId: stationId,
-          stationLabel: station?.stationLabel || "",
-          groupCount: count,
-          clientScanId,
-        }),
-      });
-      const result = await res.json();
-      if (!res.ok && !result.success) {
-        console.error("Scan API error:", res.status, result);
+      // ── 10s timeout: a sleeping/slow server must NEVER freeze the scanner ──
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      let res: Response;
+      try {
+        res = await fetch(`${API_URL}/scan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            qrData: decodedText,
+            epId: stationId,
+            stationLabel: station?.stationLabel || "",
+            groupCount: count,
+            clientScanId,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
       }
-      setLastResult(result);
-      if (result.success) {
-        setScanCount((p) => p + count);
-        navigator.vibrate?.(200);
+
+      let result: any = null;
+      try { result = await res.json(); } catch (_) { result = null; }
+
+      if (result && typeof result.success === "boolean") {
+        // Proper server verdict — granted or denied with reason
+        resultShown = result;
+        if (result.success) {
+          setScanCount((p) => p + (result.groupCount || count));
+        }
+        setShowGroupInput(false);
       } else {
-        navigator.vibrate?.([100, 100, 100]);
+        // Server reachable but returned garbage (502 HTML etc).
+        // Do NOT save as granted offline — show explicit server error.
+        resultShown = { success: false, result: "invalid", message: `Server error (${res.status}). Please scan again.` };
       }
-      setShowGroupInput(false);
     } catch (err: any) {
-      console.error("Scan fetch error:", err);
-      // Offline — save locally
+      // True network failure or 10s timeout → queue offline for sync
+      console.error("Scan network error:", err?.name || err);
       try {
         await saveScan({
           clientScanId,
@@ -372,27 +409,30 @@ export default function ScanPage() {
           synced: false,
         });
       } catch (_) {}
-      const offlineResult = { success: true, result: "offline_saved", message: "Saved offline — will sync when connected", holderName: "" };
-      setLastResult(offlineResult);
-      lastResultRef.current = offlineResult;
-      const pres = getResultPresentation(offlineResult);
-      navigator.vibrate?.(pres.vibrate);
-      playBeep(pres.sound as any);
-    }
+      resultShown = { success: true, result: "offline_saved", message: "No connection — saved offline, will sync", holderName: "" };
+    } finally {
+      if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
 
-    // Auto-resume timing: success = 2s, duplicate = 1s (fast flow),
-    // denied = 3.5s so the volunteer can read the reason
-    const lastR = lastResultRef.current;
-    const resumeDelay = (() => {
-      if (lastR?.result === "duplicate") return 1000;
-      if (lastR?.success) return 2000;
-      return 3500;
-    })();
-    resultTimerRef.current = setTimeout(() => {
-      setLastResult(null);
-      processingRef.current = false;
-      if (cameraIdRef.current) startScanner(cameraIdRef.current);
-    }, resumeDelay);
+      if (resultShown) {
+        // ── GUARANTEED notification: card + vibration + sound, every time ──
+        setLastResult(resultShown);
+        lastResultRef.current = resultShown;
+        const pres = getResultPresentation(resultShown);
+        try { navigator.vibrate?.(pres.vibrate); } catch (_) {}
+        playBeep(pres.sound as any);
+
+        const resumeDelay =
+          resultShown.result === "duplicate" ? 1000 :
+          resultShown.success ? 2000 : 3500;
+        if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
+        resultTimerRef.current = setTimeout(() => {
+          setLastResult(null);
+          processingRef.current = false;
+          if (cameraIdRef.current) startScanner(cameraIdRef.current);
+        }, resumeDelay);
+      }
+      // If no resultShown we navigated to login — nothing to resume.
+    }
   };
 
   // ─── Mount ─────────────────────────────────────────────────────────────────
