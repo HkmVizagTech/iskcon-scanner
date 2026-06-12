@@ -285,18 +285,44 @@ export default function ScanPage() {
       } catch (_) {}
       scannerRef.current = null;
     }
-    const scanner = new Html5Qrcode("qr-reader");
+    const scanner = new Html5Qrcode("qr-reader", {
+      // Use the browser's native BarcodeDetector when present — far faster
+      // and far more tolerant of screen glare / angle than the JS decoder.
+      useBarCodeDetectorIfSupported: true,
+      verbose: false,
+    });
     scannerRef.current = scanner;
-    try {
-      await scanner.start(
-        camId,
-        { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: window.innerHeight / window.innerWidth },
-        stableCallback,
-        () => {},
-      );
+    // Try the back camera with continuous autofocus; fall back gracefully.
+    const configs = [
+      { facingMode: { exact: "environment" } },
+      camId,
+      { facingMode: "environment" },
+    ];
+    let started = false;
+    for (const camConfig of configs) {
+      try {
+        await scanner.start(
+          camConfig as any,
+          {
+            fps: 15,
+            // NO qrbox → decode the ENTIRE frame. The 250px box was the bug:
+            // a QR held anywhere outside the centre box was never decoded.
+            aspectRatio: undefined,
+            disableFlip: false,
+          },
+          stableCallback,
+          () => {},
+        );
+        started = true;
+        break;
+      } catch (err) {
+        // try next config
+      }
+    }
+    if (started) {
       setIsScanning(true);
-    } catch (err) {
-      console.error("startScanner:", err);
+    } else {
+      console.error("startScanner: all camera configs failed");
       toast.error("Camera failed to start. Check permissions.");
     }
   }, [stableCallback]);
@@ -614,12 +640,16 @@ export default function ScanPage() {
         )}
 
         {isScanning && !lastResult && (
-          <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
-            <div className="relative w-[240px] h-[240px]">
-              <div className="absolute top-0 left-0 w-9 h-9 border-t-[3px] border-l-[3px] border-orange-400 rounded-tl" />
-              <div className="absolute top-0 right-0 w-9 h-9 border-t-[3px] border-r-[3px] border-orange-400 rounded-tr" />
-              <div className="absolute bottom-0 left-0 w-9 h-9 border-b-[3px] border-l-[3px] border-orange-400 rounded-bl" />
-              <div className="absolute bottom-0 right-0 w-9 h-9 border-b-[3px] border-r-[3px] border-orange-400 rounded-br" />
+          <div className="absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center">
+            <div className="relative w-[78vw] h-[78vw] max-w-[340px] max-h-[340px]">
+              <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-white/90 rounded-tl-lg" />
+              <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-white/90 rounded-tr-lg" />
+              <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-white/90 rounded-bl-lg" />
+              <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-white/90 rounded-br-lg" />
+            </div>
+            <div className="mt-5 px-3 py-1 rounded-full bg-black/55 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-xs text-white/90">Point at the QR — fill the box</span>
             </div>
           </div>
         )}
