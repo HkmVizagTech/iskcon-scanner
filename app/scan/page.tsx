@@ -674,21 +674,25 @@ export default function ScanPage() {
                 {holderName && (
                   <p className={`text-lg font-semibold truncate ${pres.sub}`}>{holderName}</p>
                 )}
-                {(lastResult.subCategory || lastResult.categoryName) && (
-                  <div className="mt-2 flex items-center justify-center gap-2">
+                {(lastResult.subCategory || lastResult.sevaSlot || lastResult.categoryName) && (
+                  <div className="mt-3 flex flex-col items-center gap-2">
+                    {/* BAHUMANA TIER — the big chip the desk reads to give the right gift */}
                     {lastResult.subCategory && (
-                      <span className={`text-3xl font-black px-5 py-2 rounded-2xl border-2 shadow ${
-                        lastResult.subCategory === "A" ? "bg-amber-100 text-amber-800 border-amber-400" :
-                        lastResult.subCategory === "B" ? "bg-slate-100 text-slate-700 border-slate-400" :
-                        lastResult.subCategory === "C" ? "bg-orange-100 text-orange-800 border-orange-400" :
-                        "bg-purple-100 text-purple-800 border-purple-400"}`}>
-                        {lastResult.subCategory}
-                      </span>
+                      <div className="flex flex-col items-center">
+                        <span className="text-[10px] uppercase tracking-widest font-semibold opacity-60 mb-0.5">Bahumana</span>
+                        <span className={`text-4xl font-black px-6 py-2 rounded-2xl border-2 shadow ${
+                          lastResult.subCategory === "A" ? "bg-amber-100 text-amber-800 border-amber-400" :
+                          lastResult.subCategory === "B" ? "bg-slate-100 text-slate-700 border-slate-400" :
+                          lastResult.subCategory === "C" ? "bg-orange-100 text-orange-800 border-orange-400" :
+                          "bg-purple-100 text-purple-800 border-purple-400"}`}>
+                          {lastResult.subCategory}
+                        </span>
+                      </div>
                     )}
-                    {/* Show full seva slot name + time if available, else just category */}
+                    {/* SEVA SLOT — the timing/seating, shown separately below the tier */}
                     {lastResult.sevaSlot ? (
-                      <div className="text-center">
-                        <p className={`text-sm font-semibold ${pres.sub}`}>{lastResult.sevaSlot.name}</p>
+                      <div className="text-center mt-1 px-3 py-1.5 rounded-xl bg-black/5">
+                        <p className={`text-sm font-bold ${pres.sub}`}>{lastResult.sevaSlot.name}</p>
                         {lastResult.sevaSlot.time && (
                           <p className={`text-xs mt-0.5 ${pres.sub} opacity-80`}>🕐 {lastResult.sevaSlot.time}</p>
                         )}
