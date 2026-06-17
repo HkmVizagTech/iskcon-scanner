@@ -228,7 +228,12 @@ export default function ScanPage() {
     const freshStations: Station[] = (volunteer.assignedEntryPoints || []).map((s: any) => ({
       ...s,
       _id: String(s._id),
-      eventId: String(s.eventId || ""),
+      // eventId may be a populated object {_id, name, ...} or a plain string
+      eventId: String(
+        (s.eventId && typeof s.eventId === "object" ? s.eventId._id : s.eventId) || ""
+      ),
+      eventName: s.eventId && typeof s.eventId === "object" ? s.eventId.name : undefined,
+      eventCode: s.eventId && typeof s.eventId === "object" ? s.eventId.eventCode : undefined,
     }));
     const freshEvents: EventInfo[] = (volunteer.assignedEvents || []).map((e: any) => ({
       ...e,
@@ -280,6 +285,14 @@ export default function ScanPage() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Dismiss the result card immediately (tap anywhere on it) and resume scanning
+  const dismissResult = useCallback(() => {
+    if (resultTimerRef.current) { clearTimeout(resultTimerRef.current); resultTimerRef.current = null; }
+    setLastResult(null);
+    processingRef.current = false;
+    resumeScanning();
+  }, [resumeScanning]);
 
   const startScanner = useCallback(async (camId: string) => {
     if (!camId) return;
@@ -380,7 +393,7 @@ export default function ScanPage() {
 
     processingRef.current = true;
 
-    // ── WATCHDOG: whatever goes wrong below, the scanner recovers in 15s ──
+    // ── WATCHDOG: whatever goes wrong below, the scanner recovers in 20s ──
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     watchdogRef.current = setTimeout(() => {
       if (processingRef.current) {
@@ -389,7 +402,7 @@ export default function ScanPage() {
         resumeScanning();
         toast.error("Scanner recovered — please scan again");
       }
-    }, 15000);
+    }, 20000);
 
     // PAUSE decoding only — keep the camera stream alive for instant resume
     try { scannerRef.current?.pause(true); } catch (_) {}
@@ -472,9 +485,12 @@ export default function ScanPage() {
         try { navigator.vibrate?.(pres.vibrate); } catch (_) {}
         playBeep(pres.sound as any);
 
+        // Keep the result visible long enough to read & act on it.
+        // Granted/duplicate: 6s. Denied/error: 10s (needs more attention).
+        // The volunteer can also tap the card to dismiss immediately.
         const resumeDelay =
-          resultShown.result === "duplicate" ? 800 :
-          resultShown.success ? 1300 : 3000;
+          resultShown.success ? 6000 :
+          resultShown.result === "duplicate" ? 6000 : 10000;
         if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
         resultTimerRef.current = setTimeout(() => {
           setLastResult(null);
@@ -665,7 +681,10 @@ export default function ScanPage() {
           const pres = getResultPresentation(lastResult);
           const holderName = lastResult.holderName || lastResult.holder_name || "";
           return (
-            <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+            <div
+              className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60 cursor-pointer"
+              onClick={dismissResult}
+            >
               <div className={`w-full max-w-[280px] rounded-2xl p-6 text-center shadow-xl ${pres.bg}`}>
                 <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3 ${pres.ring}`}>
                   <span className="text-3xl">{pres.emoji}</span>
@@ -710,6 +729,7 @@ export default function ScanPage() {
                     👨‍👩‍👧‍👦 {lastResult.groupCount} people
                   </p>
                 )}
+                <p className="text-xs mt-4 opacity-50">Tap anywhere to scan next</p>
               </div>
             </div>
           );
