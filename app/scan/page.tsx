@@ -190,6 +190,14 @@ export default function ScanPage() {
       }
 
       const data = await res.json();
+      // Refresh the localStorage cache so any fallback uses CURRENT data
+      try {
+        if (data.volunteer) {
+          localStorage.setItem("assignedEntryPoints", JSON.stringify(data.volunteer.assignedEntryPoints || []));
+          localStorage.setItem("assignedEvents", JSON.stringify(data.volunteer.assignedEvents || []));
+          localStorage.setItem("volunteerName", data.volunteer.name || "Volunteer");
+        }
+      } catch (_) {}
       applyVolunteerData(data.volunteer);
     } catch (err) {
       console.error("loadAssignments fetch error:", err);
@@ -235,10 +243,26 @@ export default function ScanPage() {
       eventName: s.eventId && typeof s.eventId === "object" ? s.eventId.name : undefined,
       eventCode: s.eventId && typeof s.eventId === "object" ? s.eventId.eventCode : undefined,
     }));
-    const freshEvents: EventInfo[] = (volunteer.assignedEvents || []).map((e: any) => ({
+    let freshEvents: EventInfo[] = (volunteer.assignedEvents || []).map((e: any) => ({
       ...e,
       _id: String(e._id),
     }));
+
+    // Fallback: if no assignedEvents, derive them from the stations' embedded
+    // event info (eventName/eventCode were pulled from the populated eventId).
+    if (freshEvents.length === 0) {
+      const seen = new Set<string>();
+      freshEvents = freshStations
+        .filter((s) => s.eventId && !seen.has(s.eventId) && seen.add(s.eventId))
+        .map((s) => ({ _id: s.eventId, name: s.eventName || "Event", eventCode: s.eventCode }));
+    } else {
+      // Enrich existing events with name from stations if missing
+      freshEvents = freshEvents.map((e) => {
+        if (e.name) return e;
+        const st = freshStations.find((s) => s.eventId === e._id);
+        return { ...e, name: st?.eventName || e.name, eventCode: e.eventCode || st?.eventCode };
+      });
+    }
 
     setStations(freshStations);
     setEvents(freshEvents);
