@@ -264,6 +264,8 @@ export default function ScanPage() {
       });
     }
 
+    console.log("[Scanner] freshStations:", freshStations.length, freshStations.map(s => s.eventId));
+    console.log("[Scanner] freshEvents:", freshEvents.length, freshEvents.map(e => ({ id: e._id, name: e.name })));
     setStations(freshStations);
     setEvents(freshEvents);
     setVolunteerName(volunteer.name || localStorage.getItem("volunteerName") || "Volunteer");
