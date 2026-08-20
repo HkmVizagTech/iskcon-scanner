@@ -1,7 +1,7 @@
-// Service Worker — network-first for all app pages
+// Service Worker — network-first for all app pages and API calls
 // Forces fresh content on every load so new deployments are always picked up
 
-const CACHE_NAME = 'iskcon-scanner-v4';
+const CACHE_NAME = 'iskcon-scanner-v5';
 
 self.addEventListener('install', (event) => {
   // Skip waiting immediately so the new SW activates right away
@@ -27,14 +27,19 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Always go to network for navigation (page loads) and Next.js JS chunks
-  // This guarantees new deployments are picked up immediately
+  // Network-first for:
+  //  - Navigation (page loads)
+  //  - Next.js JS/CSS chunks
+  //  - API calls (backend) — NEVER serve stale API data
+  //  - App pages (scan, history, root)
   if (
     event.request.mode === 'navigate' ||
     url.pathname.startsWith('/_next/') ||
     url.pathname === '/' ||
     url.pathname.startsWith('/scan') ||
-    url.pathname.startsWith('/history')
+    url.pathname.startsWith('/history') ||
+    url.hostname !== self.location.hostname ||
+    url.pathname.startsWith('/api/')
   ) {
     event.respondWith(
       fetch(event.request).catch(() =>
@@ -44,7 +49,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-first for static assets (icons, fonts)
+  // Cache-first only for same-origin static assets (icons, fonts, manifest)
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
