@@ -286,7 +286,18 @@ export default function ScanPage() {
 
   // When the selected event changes, auto-pick its first station
   useEffect(() => {
-    if (visibleStations.length === 0) { setSelectedStation(""); return; }
+    if (visibleStations.length === 0) {
+      setSelectedStation("");
+      // FIX: tell the volunteer why scanning can't start for this event
+      if (selectedEvent && events.length > 1) {
+        const ev = events.find((e) => e._id === selectedEvent);
+        toast(`No stations assigned for ${ev?.name || "this event"}. Contact your admin.`, {
+          icon: "⚠️",
+          duration: 4000,
+        });
+      }
+      return;
+    }
     setSelectedStation((prev) => {
       if (prev && visibleStations.some((s) => s._id === prev)) return prev;
       return visibleStations[0]._id;
