@@ -397,7 +397,25 @@ export default function ScanPage() {
   }, []);
 
   // ─── Scan handler ────────────────────────────────────────────────────────
-  onScanRef.current = async (decodedText: string) => {
+  onScanRef.current = async (decodedTextRaw: string) => {
+    // DEFENSIVE FIX: some Android/Chrome versions' native BarcodeDetector,
+    // as wrapped by html5-qrcode's useBarCodeDetectorIfSupported path,
+    // occasionally hand back a stringified wrapper object instead of the
+    // raw value — e.g. '{"String":"ISK-SKJ26V-SP-0000391",...}' — which
+    // then fails signature validation on the backend ("invalid" result).
+    // Unwrap it here so a corrupted decode never reaches the API.
+    let decodedText = decodedTextRaw;
+    if (typeof decodedText === "string" && decodedText.startsWith('{"String"')) {
+      try {
+        const parsed = JSON.parse(decodedText);
+        if (parsed && typeof parsed.String === "string") {
+          decodedText = parsed.String;
+        }
+      } catch (_) {
+        // fall through with the raw text — better than crashing
+      }
+    }
+
     if (processingRef.current) {
       const nowB = Date.now();
       if (nowB - busyNoticeRef.current > 2000) {
