@@ -32,6 +32,9 @@ interface EventInfo {
   _id: string;
   name: string;
   eventCode?: string;
+  // Venue names for this event (from the backend /me & /login responses).
+  // Optional; missing → legacy behavior (no venue sent, valid everywhere).
+  venues?: string[];
 }
 
 
@@ -54,7 +57,12 @@ function getResultPresentation(r: any) {
     case "revoked":
       return { title: "Pass Revoked", emoji: "🚫", bg: "bg-red-50", ring: "bg-red-600", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
     case "not_included":
-      return { title: "Wrong Station", emoji: "↪️", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
+      // When the backend includes allowedVenues, this is a venue mismatch
+      // (pass valid at a different venue), not a station mismatch.
+      return {
+        title: (r && r.allowedVenues && r.allowedVenues.length > 0) ? "Wrong Venue" : "Wrong Station",
+        emoji: "↪️", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error",
+      };
     case "capacity_full":
       return { title: "Capacity Full", emoji: "🈵", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
     case "link_required":
@@ -106,6 +114,7 @@ export default function ScanPage() {
 
   // Selection
   const [selectedEvent, setSelectedEvent] = useState("");
+  const [selectedVenue, setSelectedVenue] = useState("");
   const [selectedStation, setSelectedStation] = useState("");
 
   // Scanner UI
@@ -122,6 +131,7 @@ export default function ScanPage() {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const processingRef = useRef(false);
   const resultTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const selectedVenueRef = useRef("");
   const selectedStationRef = useRef("");
   const stationsRef = useRef<Station[]>([]);
   const groupCountRef = useRef(1);
@@ -135,6 +145,7 @@ export default function ScanPage() {
   const COOLDOWN_MS = 5000;
 
   useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
+  useEffect(() => { selectedVenueRef.current = selectedVenue; }, [selectedVenue]);
   useEffect(() => { lastResultRef.current = lastResult; }, [lastResult]);
   useEffect(() => { stationsRef.current = stations; }, [stations]);
   useEffect(() => { groupCountRef.current = groupCount; }, [groupCount]);
@@ -155,9 +166,43 @@ export default function ScanPage() {
     });
   })();
 
+  // Stations that belong to a given event (used to label events with no stations)
+  const eventsForStation = (eventId: string) =>
+    stations.filter((s) => String(s.eventId) === String(eventId));
+
+  // All events the volunteer can toggle between. Include events that come from
+  // stations' eventIds even if they aren't in the assignedEvents list, so a
+  // freshly assigned event/venue is never hidden from the toggle.
+  const toggleableEvents = (() => {
+    const map = new Map<string, EventInfo>();
+    for (const ev of events) if (ev?._id) map.set(String(ev._id), ev);
+    for (const s of stations) {
+      if (s.eventId && !map.has(String(s.eventId))) {
+        map.set(String(s.eventId), {
+          _id: s.eventId,
+          name: s.eventName || "Event",
+          eventCode: s.eventCode,
+        });
+      }
+    }
+    return Array.from(map.values());
+  })();
+
+  // Display name for an event — prefer eventCode-based label for compactness
+  const sortableEventName = (ev: EventInfo) =>
+    ev.eventCode ? `${ev.eventCode} · ${ev.name}` : ev.name;
+
   const selectedStationData = stations.find((s) => s._id === selectedStation);
   const selectedEventData = events.find((e) => e._id === selectedEvent);
   const stationAllowsGroup = selectedStationData?.allowGroupCount ?? false;
+
+  // Venues available for the currently selected event. Events may be served with
+  // a `venues[]` list (names). If absent, we show no venue selector (legacy).
+  const eventVenues: string[] = (() => {
+    const list = selectedEventData?.venues;
+    if (!Array.isArray(list) || list.length === 0) return [];
+    return list.map((v) => String(v ?? "").trim()).filter(Boolean);
+  })();
 
   // ─── Load assignments from server (single source of truth) ─────────────────
   const loadAssignments = useCallback(async () => {
@@ -247,6 +292,12 @@ export default function ScanPage() {
     let freshEvents: EventInfo[] = (volunteer.assignedEvents || []).map((e: any) => ({
       ...e,
       _id: String(e._id),
+      // Normalise the venues list into simple name strings. The backend serves
+      // `venue` as an array of objects ({name, building, ...}); the scanner only
+      // needs the names for its selector and scan payload.
+      venues: (Array.isArray(e.venue) ? e.venue : [])
+        .map((v: any) => String(v?.name ?? v ?? "").trim())
+        .filter(Boolean),
     }));
 
     // Fallback: if no assignedEvents, derive them from the stations' embedded
@@ -301,6 +352,25 @@ export default function ScanPage() {
       toast.error("No active stations assigned to you. Contact your admin.");
     }
   }, []);
+
+  // When the selected event changes, auto-pick its first venue
+  useEffect(() => {
+    const venues = (() => {
+      const ev = events.find((e) => e._id === selectedEvent);
+      const list = ev?.venues;
+      return (Array.isArray(list) ? list : []).map((v) => String(v ?? "").trim()).filter(Boolean);
+    })();
+    if (venues.length === 0) {
+      // No venues on this event (legacy data) — clear selection
+      if (selectedVenue !== "") setSelectedVenue("");
+      return;
+    }
+    setSelectedVenue((prev) => {
+      if (prev && venues.includes(prev)) return prev;
+      return venues[0];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEvent]);
 
   // When the selected event changes, auto-pick its first station
   useEffect(() => {
@@ -506,6 +576,7 @@ export default function ScanPage() {
             qrData: decodedText,
             epId: stationId,
             stationLabel: station?.stationLabel || "",
+            venue: selectedVenueRef.current || undefined,
             groupCount: count,
             clientScanId,
           }),
@@ -539,6 +610,7 @@ export default function ScanPage() {
           qrData: decodedText,
           epId: stationId,
           station: station?.stationLabel || stationId,
+          venue: selectedVenueRef.current || undefined,
           timestamp: new Date(),
           result: "granted",
           synced: false,
@@ -695,14 +767,38 @@ export default function ScanPage() {
           <div className="bg-white/20 px-2.5 py-0.5 rounded-full"><span className="font-bold text-xs text-white">{scanCount}</span></div>
         </div>
 
-        {/* Event selector — only if more than one event */}
-        {events.length > 1 && (
+        {/* Event selector — show whenever the volunteer has more than one event
+            (or stations spanning multiple events) so they can always toggle. */}
+        {toggleableEvents.length > 1 && (
           <div className="px-3 pb-2">
-            <label className="block text-[10px] text-white/70 mb-1">Festival / Event</label>
-            <select value={selectedEvent} onChange={(e) => handleEventChange(e.target.value)}
-              className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30">
-              {events.map((ev) => (
-                <option key={ev._id} value={ev._id} className="text-gray-900">🕉️ {ev.name}</option>
+            <label className="block text-[10px] text-white/70 mb-1">Venue / Event</label>
+            <select
+              value={selectedEvent}
+              onChange={(e) => handleEventChange(e.target.value)}
+              className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
+            >
+              {toggleableEvents.map((ev) => (
+                <option key={ev._id} value={ev._id} className="text-gray-900">
+                  🕉️ {sortableEventName(ev)}{eventsForStation(ev._id).length > 0 ? "" : " (no stations)"}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Venue selector — per-event. Shown whenever the current event has
+            more than one venue (or any venue) so every scan is tagged with
+            where it physically happened. */}
+        {eventVenues.length > 0 && (
+          <div className="px-3 pb-2">
+            <label className="block text-[10px] text-white/70 mb-1">Venue</label>
+            <select
+              value={selectedVenue}
+              onChange={(e) => setSelectedVenue(e.target.value)}
+              className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
+            >
+              {eventVenues.map((v) => (
+                <option key={v} value={v} className="text-gray-900">📍 {v}</option>
               ))}
             </select>
           </div>

@@ -41,6 +41,7 @@ class SyncService {
         qrData: scan.qrData,
         epId: scan.epId,
         stationLabel: scan.station,
+        venue: scan.venue,
         // FIX: use the stable UUID stored in the record — not derived from auto-increment id
         // which resets after DB clear and causes false duplicate detection on the server
         client_scan_id: scan.clientScanId || `scan-${scan.id}-${Date.now()}`,

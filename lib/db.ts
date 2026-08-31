@@ -12,6 +12,9 @@ export interface ScanRecord {
   holderName?: string;
   synced: boolean;
   epId: string;
+  // Venue (name) where this scan physically happened. Optional; legacy offline
+  // records won't have it. Sent to the backend so per-venue rules and reports work.
+  venue?: string;
   response?: any;
 }
 
@@ -26,6 +29,10 @@ export class ScannerDatabase extends Dexie {
     // FIX: version 2 adds clientScanId index for dedup
     this.version(2).stores({
       scans: "++id, clientScanId, timestamp, synced, station, result",
+    });
+    // version 3 adds optional venue index (backward compatible with v2 records)
+    this.version(3).stores({
+      scans: "++id, clientScanId, timestamp, synced, station, result, venue",
     });
   }
 }
