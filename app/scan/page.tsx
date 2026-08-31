@@ -131,6 +131,7 @@ export default function ScanPage() {
   const watchdogRef = useRef<NodeJS.Timeout | null>(null); // force-recovers a stuck scanner
   const busyNoticeRef = useRef(0); // throttles "finishing previous scan" toast
   const lastResultRef = useRef<any>(null);
+  const prevEventsRef = useRef<string[]>([]); // tracks event IDs from the last applyVolunteerData call
   const COOLDOWN_MS = 5000;
 
   useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
@@ -270,10 +271,25 @@ export default function ScanPage() {
     setEvents(freshEvents);
     setVolunteerName(volunteer.name || localStorage.getItem("volunteerName") || "Volunteer");
 
-    // Pick an event: keep current if still valid, else first event that has stations
+    // Detect newly added events (not present in the previous assignment)
+    const prevEventIds = prevEventsRef.current;
+    const currentEventIds = freshEvents.map((e) => e._id);
+    const newEventIds = currentEventIds.filter((id) => !prevEventIds.includes(id));
+    prevEventsRef.current = currentEventIds;
+
+    // Pick an event: prefer NEW events over previously selected ones so the
+    // volunteer always lands on their latest assignment. Falls back to keeping
+    // the current selection if nothing changed.
     setSelectedEvent((prev) => {
       const eventIdsWithStations = new Set(freshStations.map((s) => s.eventId));
+      // If there are brand-new events, switch to the first one that has stations
+      if (newEventIds.length > 0) {
+        const newEventWithStations = newEventIds.find((id) => eventIdsWithStations.has(id));
+        if (newEventWithStations) return newEventWithStations;
+      }
+      // No new events — keep the current selection if still valid
       if (prev && eventIdsWithStations.has(prev)) return prev;
+      // Fallback: first event that has stations
       return freshEvents.find((e) => eventIdsWithStations.has(e._id))?._id
         || freshStations[0]?.eventId
         || "";
