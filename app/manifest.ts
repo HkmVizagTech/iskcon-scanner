@@ -36,13 +36,10 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: "maskable",
       },
     ],
-    screenshots: [
-      {
-        src: "/splash.png",
-        sizes: "1170x2532",
-        type: "image/png",
-      },
-    ],
+    // screenshots omitted — the referenced /splash.png was a placeholder
+    // that never existed as a real file (404). Not required for
+    // installability; add back with a real UI screenshot if desired for
+    // the richer install-preview UI some browsers show.
     categories: ["utility", "productivity"],
     prefer_related_applications: false,
   };

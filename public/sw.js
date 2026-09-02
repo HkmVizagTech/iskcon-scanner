@@ -1,7 +1,7 @@
 // Service Worker — network-first for all app pages and API calls
 // Forces fresh content on every load so new deployments are always picked up
 
-const CACHE_NAME = 'iskcon-scanner-v6';
+const CACHE_NAME = 'iskcon-scanner-v7';
 
 self.addEventListener('install', (event) => {
   // Skip waiting immediately so the new SW activates right away
