@@ -123,6 +123,7 @@ export default function ScanPage() {
   const [lastResult, setLastResult] = useState<any>(null);
   const [cameras, setCameras] = useState<any[]>([]);
   const [cameraId, setCameraId] = useState("");
+  const [cameraError, setCameraError] = useState<{ type: string; message: string } | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [groupCount, setGroupCount] = useState(1);
   const [showGroupInput, setShowGroupInput] = useState(false);
@@ -464,9 +465,13 @@ export default function ScanPage() {
     }
     if (started) {
       setIsScanning(true);
+      setCameraError(null);
     } else {
       console.error("startScanner: all camera configs failed");
-      toast.error("Camera failed to start. Check permissions.");
+      setCameraError({
+        type: "start_failed",
+        message: "Camera permission was granted, but the camera could not start. Tap Retry — if it keeps failing, close other apps using the camera and try again.",
+      });
     }
   }, [stableCallback]);
 
@@ -645,6 +650,55 @@ export default function ScanPage() {
     }
   };
 
+  // ─── Camera access — distinguishes WHY it failed, so the volunteer sees
+  // something actionable instead of a vague toast that vanishes. Also
+  // callable again from a Retry button, unlike the old mount-only attempt. ──
+  const requestCameraAccess = useCallback(async () => {
+    setCameraError(null);
+    try {
+      const cams = await Html5Qrcode.getCameras();
+      if (!cams?.length) {
+        setCameraError({ type: "no_camera", message: "No camera found on this device." });
+        return;
+      }
+      setCameras(cams);
+      const back = cams.find((c) => /back|environment|rear/i.test(c.label)) || cams[0];
+      setCameraId(back.id);
+    } catch (err: any) {
+      // Secure-context check first — getUserMedia silently fails on plain
+      // http:// origins (except localhost), which looks identical to a
+      // permission denial but needs a completely different fix.
+      if (typeof window !== "undefined" && window.location.protocol !== "https:" &&
+          window.location.hostname !== "localhost") {
+        setCameraError({
+          type: "insecure_context",
+          message: "Camera requires a secure (https://) connection. Contact your admin — the scanner URL isn't loading over HTTPS.",
+        });
+        return;
+      }
+
+      const name = err?.name || "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setCameraError({
+          type: "denied",
+          message: "Camera access was denied. On Android: open the scanner app, tap the lock/info icon next to the address (or long-press the app icon → App info → Permissions), and allow Camera. Then tap Retry.",
+        });
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        setCameraError({ type: "no_camera", message: "No camera was found on this device." });
+      } else if (name === "NotReadableError" || name === "TrackStartError") {
+        setCameraError({
+          type: "in_use",
+          message: "Camera is already in use by another app. Close other camera apps (or other browser tabs using the camera) and tap Retry.",
+        });
+      } else {
+        setCameraError({
+          type: "unknown",
+          message: `Could not access camera${name ? ` (${name})` : ""}. Tap Retry, or close and reopen the app.`,
+        });
+      }
+    }
+  }, []);
+
   // ─── Mount ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     setIsOnline(navigator.onLine);
@@ -658,14 +712,7 @@ export default function ScanPage() {
     window.addEventListener("offline", onOffline);
     window.addEventListener("focus", onFocus);
 
-    Html5Qrcode.getCameras()
-      .then((cams) => {
-        if (!cams?.length) { toast.error("No camera found"); return; }
-        setCameras(cams);
-        const back = cams.find((c) => /back|environment|rear/i.test(c.label)) || cams[0];
-        setCameraId(back.id);
-      })
-      .catch(() => toast.error("Camera permission denied"));
+    requestCameraAccess();
 
     return () => {
       if (resultTimerRef.current) clearTimeout(resultTimerRef.current);
@@ -827,6 +874,22 @@ export default function ScanPage() {
           <button onClick={switchCamera} className="absolute top-3 right-3 z-20 bg-black/50 text-white p-2 rounded-full">
             <Camera className="w-4 h-4" />
           </button>
+        )}
+
+        {cameraError && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/90 p-6">
+            <div className="max-w-sm text-center space-y-4">
+              <Camera className="w-10 h-10 text-red-400 mx-auto" />
+              <p className="text-white font-semibold">Camera Not Available</p>
+              <p className="text-white/70 text-sm leading-relaxed">{cameraError.message}</p>
+              <button
+                onClick={requestCameraAccess}
+                className="px-5 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-medium"
+              >
+                Retry Camera Access
+              </button>
+            </div>
+          </div>
         )}
 
         {isScanning && !lastResult && (
