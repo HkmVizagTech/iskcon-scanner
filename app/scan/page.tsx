@@ -110,6 +110,9 @@ export default function ScanPage() {
   const [volunteerName, setVolunteerName] = useState("");
   const [stations, setStations] = useState<Station[]>([]);
   const [events, setEvents] = useState<EventInfo[]>([]);
+  // Indices into the event's venue[] array that this volunteer is restricted
+  // to. Empty array = no restriction (legacy accounts, unchanged behaviour).
+  const [assignedVenueIdx, setAssignedVenueIdx] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Selection
@@ -199,11 +202,26 @@ export default function ScanPage() {
 
   // Venues available for the currently selected event. Events may be served with
   // a `venues[]` list (names). If absent, we show no venue selector (legacy).
+  // If this volunteer has assignedVenueIdx set, restrict to ONLY those venues —
+  // this is what stops a volunteer from accidentally picking the wrong venue
+  // on their own device (the root cause of the Janmashtami venue mix-up).
   const eventVenues: string[] = (() => {
     const list = selectedEventData?.venues;
     if (!Array.isArray(list) || list.length === 0) return [];
-    return list.map((v) => String(v ?? "").trim()).filter(Boolean);
+    const names = list.map((v) => String(v ?? "").trim()).filter(Boolean);
+    if (assignedVenueIdx.length === 0) return names; // no restriction — legacy behaviour
+    const restricted = assignedVenueIdx
+      .map((i) => names[i])
+      .filter((v): v is string => !!v);
+    // If the restriction resolves to nothing (e.g. stale indices from a
+    // different venue list), fail open to the full list rather than
+    // silently hiding the selector — better to let them pick than block them.
+    return restricted.length > 0 ? restricted : names;
   })();
+
+  // True when this volunteer's venue choice is locked to exactly one venue —
+  // shown as a fixed label instead of a dropdown so it can't be changed.
+  const venueIsLocked = assignedVenueIdx.length > 0 && eventVenues.length === 1;
 
   // ─── Load assignments from server (single source of truth) ─────────────────
   const loadAssignments = useCallback(async () => {
@@ -243,6 +261,7 @@ export default function ScanPage() {
           localStorage.setItem("assignedEntryPoints", JSON.stringify(data.volunteer.assignedEntryPoints || []));
           localStorage.setItem("assignedEvents", JSON.stringify(data.volunteer.assignedEvents || []));
           localStorage.setItem("volunteerName", data.volunteer.name || "Volunteer");
+          localStorage.setItem("assignedVenueIdx", JSON.stringify(data.volunteer.assignedVenues || []));
         }
       } catch (_) {}
       applyVolunteerData(data.volunteer);
@@ -261,6 +280,7 @@ export default function ScanPage() {
     try {
       const savedStations = localStorage.getItem("assignedEntryPoints");
       const savedEvents = localStorage.getItem("assignedEvents");
+      const savedVenueIdx = localStorage.getItem("assignedVenueIdx");
       if (savedStations) {
         const parsed = JSON.parse(savedStations);
         if (parsed.length > 0) {
@@ -268,6 +288,7 @@ export default function ScanPage() {
             name: localStorage.getItem("volunteerName") || "Volunteer",
             assignedEntryPoints: parsed,
             assignedEvents: savedEvents ? JSON.parse(savedEvents) : [],
+            assignedVenues: savedVenueIdx ? JSON.parse(savedVenueIdx) : [],
           });
           return true;
         }
@@ -322,6 +343,11 @@ export default function ScanPage() {
     setStations(freshStations);
     setEvents(freshEvents);
     setVolunteerName(volunteer.name || localStorage.getItem("volunteerName") || "Volunteer");
+    setAssignedVenueIdx(
+      Array.isArray(volunteer.assignedVenues)
+        ? volunteer.assignedVenues.map(Number)
+        : []
+    );
 
     // Detect newly added events (not present in the previous assignment)
     const prevEventIds = prevEventsRef.current;
@@ -354,12 +380,15 @@ export default function ScanPage() {
     }
   }, []);
 
-  // When the selected event changes, auto-pick its first venue
+  // When the selected event changes, auto-pick its (restricted) venue
   useEffect(() => {
     const venues = (() => {
       const ev = events.find((e) => e._id === selectedEvent);
       const list = ev?.venues;
-      return (Array.isArray(list) ? list : []).map((v) => String(v ?? "").trim()).filter(Boolean);
+      const names = (Array.isArray(list) ? list : []).map((v) => String(v ?? "").trim()).filter(Boolean);
+      if (assignedVenueIdx.length === 0) return names;
+      const restricted = assignedVenueIdx.map((i) => names[i]).filter((v): v is string => !!v);
+      return restricted.length > 0 ? restricted : names;
     })();
     if (venues.length === 0) {
       // No venues on this event (legacy data) — clear selection
@@ -371,7 +400,7 @@ export default function ScanPage() {
       return venues[0];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedEvent]);
+  }, [selectedEvent, assignedVenueIdx]);
 
   // When the selected event changes, auto-pick its first station
   useEffect(() => {
@@ -835,19 +864,28 @@ export default function ScanPage() {
 
         {/* Venue selector — per-event. Shown whenever the current event has
             more than one venue (or any venue) so every scan is tagged with
-            where it physically happened. */}
+            where it physically happened. Locked to a fixed label (no
+            dropdown) when this volunteer's account has exactly one assigned
+            venue, so it can't be changed to the wrong one by mistake. */}
         {eventVenues.length > 0 && (
           <div className="px-3 pb-2">
             <label className="block text-[10px] text-white/70 mb-1">Venue</label>
-            <select
-              value={selectedVenue}
-              onChange={(e) => setSelectedVenue(e.target.value)}
-              className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
-            >
-              {eventVenues.map((v) => (
-                <option key={v} value={v} className="text-gray-900">📍 {v}</option>
-              ))}
-            </select>
+            {venueIsLocked ? (
+              <div className="w-full px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs border border-white/20 flex items-center justify-between">
+                <span>📍 {eventVenues[0]}</span>
+                <span className="text-[9px] text-white/50">🔒 assigned</span>
+              </div>
+            ) : (
+              <select
+                value={selectedVenue}
+                onChange={(e) => setSelectedVenue(e.target.value)}
+                className="w-full px-3 py-1.5 rounded-lg bg-white/20 text-white text-xs border border-white/30"
+              >
+                {eventVenues.map((v) => (
+                  <option key={v} value={v} className="text-gray-900">📍 {v}</option>
+                ))}
+              </select>
+            )}
           </div>
         )}
 
