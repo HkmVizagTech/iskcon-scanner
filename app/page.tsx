@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { QrCode, Mail, Phone, Lock, LogIn, AlertCircle } from "lucide-react";
 import axios from "axios";
@@ -8,11 +8,36 @@ import toast from "react-hot-toast";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
+// Same decoding used on the scan page — a JWT whose exp is in the past means
+// the server will 401 anyway, so clear it rather than let it linger.
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.exp * 1000 < Date.now();
+  } catch {
+    return true;
+  }
+}
+
 export default function VolunteerLoginPage() {
   const router = useRouter();
   const [loginMethod, setLoginMethod] = useState<"email" | "phone">("phone");
   const [credentials, setCredentials] = useState({ email: "", phone: "", password: "" });
   const [loading, setLoading] = useState(false);
+
+  // Restore session on reopen — the manifest start_url is `/`, so a standalone
+  // (installed) PWA relaunch lands on this page even when the login is still
+  // valid. Bounce straight back to the scanner instead of forcing re-login.
+  // Expired tokens are cleared so the volunteer re-logs in cleanly.
+  useEffect(() => {
+    const token = localStorage.getItem("scannerToken");
+    if (!token) return;
+    if (isTokenExpired(token)) {
+      localStorage.removeItem("scannerToken");
+      return;
+    }
+    router.replace("/scan");
+  }, [router]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
