@@ -961,6 +961,30 @@ export default function ScanPage() {
                 {holderName && (
                   <p className={`text-lg font-semibold truncate ${pres.sub}`}>{holderName}</p>
                 )}
+                {(() => {
+                  // LANE BADGE — instant tell for whether this pass belongs at the
+                  // Prasadam Coupon counter or the general Prasadam counter.
+                  const isCoupon =
+                    !!lastResult.isPrasadamCoupon ||
+                    lastResult.passType === "prasadam_coupon" ||
+                    `${lastResult.categoryCode || ""}`.toUpperCase() === "PR";
+                  const hasLaneInfo =
+                    isCoupon || !!lastResult.passType || !!lastResult.categoryCode;
+                  if (!hasLaneInfo) return null;
+                  return (
+                    <div className="mt-3 flex items-center justify-center">
+                      {isCoupon ? (
+                        <span className="px-4 py-1.5 rounded-full text-sm font-black border-2 bg-amber-200 text-amber-900 border-amber-400">
+                          Prasadam Coupon → Coupon Counter
+                        </span>
+                      ) : (
+                        <span className="px-4 py-1.5 rounded-full text-sm font-medium bg-white/60 text-gray-700 border border-gray-300">
+                          {lastResult.categoryName ? `${lastResult.categoryName} · ` : ""}Seva Pass
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
                 {(lastResult.subCategory || lastResult.sevaSlot || lastResult.categoryName) && (
                   <div className="mt-3 flex flex-col items-center gap-2">
                     {/* BAHUMANA TIER — the big chip the desk reads to give the right gift */}
