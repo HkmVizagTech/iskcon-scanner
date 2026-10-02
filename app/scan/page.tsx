@@ -44,8 +44,8 @@ function getResultPresentation(r: any) {
   switch (result) {
     case "granted":
       return { title: "Access Granted", emoji: "✅", bg: "bg-green-50", ring: "bg-green-500", text: "text-green-900", sub: "text-green-800", vibrate: [200], sound: "success" };
-    case "offline_saved":
-      return { title: "Saved Offline", emoji: "📥", bg: "bg-blue-50", ring: "bg-blue-500", text: "text-blue-900", sub: "text-blue-800", vibrate: [200], sound: "success" };
+    case "pending_verification":
+      return { title: "PENDING VERIFICATION", emoji: "⚠️", bg: "bg-amber-100", ring: "bg-amber-500", text: "text-amber-900", sub: "text-amber-900", vibrate: [400, 150, 400, 150, 400], sound: "pending" };
     case "duplicate":
       return { title: "Already Scanned", emoji: "🔁", bg: "bg-yellow-50", ring: "bg-yellow-500", text: "text-yellow-900", sub: "text-yellow-800", vibrate: [100, 80, 100], sound: "warn" };
     case "already_used":
@@ -74,7 +74,7 @@ function getResultPresentation(r: any) {
 
 // Simple beep via WebAudio — distinct tones for success / warn / error
 let audioCtx: AudioContext | null = null;
-function playBeep(kind: "success" | "warn" | "error") {
+function playBeep(kind: "success" | "warn" | "error" | "pending") {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
     const ctx = audioCtx;
@@ -90,6 +90,7 @@ function playBeep(kind: "success" | "warn" | "error") {
     };
     if (kind === "success") { beep(880, 0, 0.12); beep(1320, 0.13, 0.15); }       // rising chirp
     else if (kind === "warn") { beep(600, 0, 0.15); beep(600, 0.2, 0.15); }        // double mid tone
+    else if (kind === "pending") { beep(440, 0, 0.2); beep(660, 0.25, 0.2); beep(440, 0.5, 0.2); } // slow triple, not a success chirp
     else { beep(280, 0, 0.25); beep(220, 0.28, 0.3); }                              // low falling buzz
   } catch (_) {}
 }
@@ -101,6 +102,16 @@ function isTokenExpired(token: string): boolean {
   } catch {
     return true;
   }
+}
+
+// Venues a volunteer may scan at for one event. `blocked` = the event has a venue
+// list but the volunteer's stored venue indices resolve to none of it (stale or
+// corrupt assignment) — never fall back to the full list in that case.
+function resolveVenues(list: string[] | undefined, assignedIdx: number[]) {
+  const names = (Array.isArray(list) ? list : []).map((v) => String(v ?? "").trim()).filter(Boolean);
+  if (assignedIdx.length === 0) return { venues: names, blocked: false };
+  const restricted = assignedIdx.map((i) => names[i]).filter((v): v is string => !!v);
+  return { venues: restricted, blocked: names.length > 0 && restricted.length === 0 };
 }
 
 export default function ScanPage() {
@@ -136,6 +147,7 @@ export default function ScanPage() {
   const processingRef = useRef(false);
   const resultTimerRef = useRef<NodeJS.Timeout | null>(null);
   const selectedVenueRef = useRef("");
+  const venueBlockedRef = useRef(false);
   const selectedStationRef = useRef("");
   const stationsRef = useRef<Station[]>([]);
   const groupCountRef = useRef(1);
@@ -205,19 +217,10 @@ export default function ScanPage() {
   // If this volunteer has assignedVenueIdx set, restrict to ONLY those venues —
   // this is what stops a volunteer from accidentally picking the wrong venue
   // on their own device (the root cause of the Janmashtami venue mix-up).
-  const eventVenues: string[] = (() => {
-    const list = selectedEventData?.venues;
-    if (!Array.isArray(list) || list.length === 0) return [];
-    const names = list.map((v) => String(v ?? "").trim()).filter(Boolean);
-    if (assignedVenueIdx.length === 0) return names; // no restriction — legacy behaviour
-    const restricted = assignedVenueIdx
-      .map((i) => names[i])
-      .filter((v): v is string => !!v);
-    // If the restriction resolves to nothing (e.g. stale indices from a
-    // different venue list), fail open to the full list rather than
-    // silently hiding the selector — better to let them pick than block them.
-    return restricted.length > 0 ? restricted : names;
-  })();
+  // If the restriction resolves to nothing (e.g. stale indices), scanning is
+  // blocked and the volunteer is told to contact the admin — no fail-open.
+  const { venues: eventVenues, blocked: venueBlocked } = resolveVenues(selectedEventData?.venues, assignedVenueIdx);
+  venueBlockedRef.current = venueBlocked;
 
   // True when this volunteer's venue choice is locked to exactly one venue —
   // shown as a fixed label instead of a dropdown so it can't be changed.
@@ -240,6 +243,7 @@ export default function ScanPage() {
       });
 
       if (res.status === 401) {
+        toast.error("Session expired. Please log in again.");
         localStorage.removeItem("scannerToken");
         router.push("/");
         return;
@@ -338,8 +342,6 @@ export default function ScanPage() {
       });
     }
 
-    console.log("[Scanner] freshStations:", freshStations.length, freshStations.map(s => s.eventId));
-    console.log("[Scanner] freshEvents:", freshEvents.length, freshEvents.map(e => ({ id: e._id, name: e.name })));
     setStations(freshStations);
     setEvents(freshEvents);
     setVolunteerName(volunteer.name || localStorage.getItem("volunteerName") || "Volunteer");
@@ -382,16 +384,9 @@ export default function ScanPage() {
 
   // When the selected event changes, auto-pick its (restricted) venue
   useEffect(() => {
-    const venues = (() => {
-      const ev = events.find((e) => e._id === selectedEvent);
-      const list = ev?.venues;
-      const names = (Array.isArray(list) ? list : []).map((v) => String(v ?? "").trim()).filter(Boolean);
-      if (assignedVenueIdx.length === 0) return names;
-      const restricted = assignedVenueIdx.map((i) => names[i]).filter((v): v is string => !!v);
-      return restricted.length > 0 ? restricted : names;
-    })();
+    const { venues } = resolveVenues(events.find((e) => e._id === selectedEvent)?.venues, assignedVenueIdx);
     if (venues.length === 0) {
-      // No venues on this event (legacy data) — clear selection
+      // No venues on this event (legacy data) or assignment unresolvable — clear selection
       if (selectedVenue !== "") setSelectedVenue("");
       return;
     }
@@ -400,7 +395,7 @@ export default function ScanPage() {
       return venues[0];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedEvent, assignedVenueIdx]);
+  }, [selectedEvent, assignedVenueIdx, events]);
 
   // When the selected event changes, auto-pick its first station
   useEffect(() => {
@@ -550,6 +545,10 @@ export default function ScanPage() {
       toast.error("Select a station first");
       return;
     }
+    if (venueBlockedRef.current) {
+      toast.error("Venue assignment problem — contact your admin");
+      return;
+    }
 
     // ── Cooldown with FEEDBACK — never silent ──
     const key = `${decodedText.slice(-24)}::${stationId}`;
@@ -620,6 +619,13 @@ export default function ScanPage() {
         clearTimeout(timeoutId);
       }
 
+      if (res.status === 401) {
+        toast.error("Session expired. Please log in again.");
+        localStorage.removeItem("scannerToken");
+        router.push("/");
+        return;
+      }
+
       let result: any = null;
       try { result = await res.json(); } catch (_) { result = null; }
 
@@ -636,21 +642,32 @@ export default function ScanPage() {
         resultShown = { success: false, result: "invalid", message: `Server error (${res.status}). Please scan again.` };
       }
     } catch (err: any) {
-      // True network failure or 10s timeout → queue offline for sync
+      // True network failure or 10s timeout → the pass was NOT validated. Queue it as
+      // pending (same clientScanId so the server dedups on sync) and tell the volunteer
+      // to fall back to the manual check policy — never show it as granted.
       console.error("Scan network error:", err?.name || err);
+      let saved = true;
       try {
         await saveScan({
           clientScanId,
           qrData: decodedText,
           epId: stationId,
-          station: station?.stationLabel || stationId,
+          station: station?.stationLabel || "",
           venue: selectedVenueRef.current || undefined,
+          groupCount: count,
           timestamp: new Date(),
-          result: "granted",
+          result: "pending",
           synced: false,
         });
-      } catch (_) {}
-      resultShown = { success: true, result: "offline_saved", message: "No connection — saved offline, will sync", holderName: "" };
+      } catch (_) { saved = false; }
+      resultShown = {
+        success: false,
+        result: "pending_verification",
+        message: saved
+          ? "Not verified — follow manual check policy"
+          : "Not verified and NOT saved — follow manual check policy",
+        holderName: "",
+      };
     } finally {
       if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
 
@@ -930,6 +947,23 @@ export default function ScanPage() {
           </div>
         )}
 
+        {venueBlocked && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/90 p-6">
+            <div className="max-w-sm text-center space-y-3">
+              <p className="text-white font-semibold">Venue assignment problem</p>
+              <p className="text-white/70 text-sm leading-relaxed">
+                Your assigned venue could not be matched for this event, so scanning is disabled. Please contact your admin.
+              </p>
+              <button
+                onClick={() => loadAssignments()}
+                className="px-5 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-medium"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
         {isScanning && !lastResult && (
           <div className="absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center">
             <div className="relative w-[78vw] h-[78vw] max-w-[340px] max-h-[340px]">
@@ -1071,6 +1105,12 @@ export default function ScanPage() {
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
                 body: JSON.stringify({ qrData: "test-invalid-qr", epId: stationId, stationLabel: "test", groupCount: 1, clientScanId: `test-${Date.now()}` }),
               });
+              if (r.status === 401) {
+                toast.error("Session expired. Please log in again.");
+                localStorage.removeItem("scannerToken");
+                router.push("/");
+                return;
+              }
               const data = await r.json();
               toast(`API responded: ${r.status} — ${data.message || data.error || JSON.stringify(data).slice(0, 80)}`, { duration: 5000 });
               setLastResult(data);

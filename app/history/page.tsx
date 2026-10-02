@@ -3,11 +3,11 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle, XCircle, Clock, Trash2, RefreshCw, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, CheckCircle, XCircle, AlertTriangle, Clock, Trash2, RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { format } from "date-fns";
 import toast from "react-hot-toast";
 import { db, clearAllScans, getScanStats, getUnsyncedScans, type ScanRecord } from "@/lib/db";
-import { syncService } from "@/lib/sync";
+import { syncService, SYNC_DONE_EVENT } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +16,7 @@ export default function HistoryPage() {
   const [scans, setScans] = useState<ScanRecord[]>([]);
   const [isOnline, setIsOnline] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [stats, setStats] = useState({ total: 0, granted: 0, denied: 0, unsynced: 0 });
+  const [stats, setStats] = useState({ total: 0, granted: 0, denied: 0, pending: 0, unsynced: 0 });
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -33,8 +33,11 @@ export default function HistoryPage() {
     // FIX: read from IndexedDB — previously read from localStorage("scanHistory")
     // which was never written to (scans are saved to IndexedDB via saveScan())
     loadScans();
+    // Background sync can change rows while this page is open
+    window.addEventListener(SYNC_DONE_EVENT, loadScans);
 
     return () => {
+      window.removeEventListener(SYNC_DONE_EVENT, loadScans);
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
@@ -55,7 +58,7 @@ export default function HistoryPage() {
     if (!confirm("Clear all local scan history? This cannot be undone.")) return;
     await clearAllScans();
     setScans([]);
-    setStats({ total: 0, granted: 0, denied: 0, unsynced: 0 });
+    setStats({ total: 0, granted: 0, denied: 0, pending: 0, unsynced: 0 });
     toast.success("History cleared");
   };
 
@@ -104,6 +107,10 @@ export default function HistoryPage() {
           <div className="text-xs text-gray-500">Denied</div>
         </div>
         <div className="text-center">
+          <div className="text-xl font-bold text-amber-600">{stats.pending}</div>
+          <div className="text-xs text-gray-500">Pending</div>
+        </div>
+        <div className="text-center">
           <div className="text-xl font-bold text-orange-500">{stats.unsynced}</div>
           <div className="text-xs text-gray-500">Unsynced</div>
         </div>
@@ -140,16 +147,33 @@ export default function HistoryPage() {
             <div key={scan.id} className="bg-white rounded-xl p-4 flex items-center gap-3 shadow-sm">
               {scan.result === "granted"
                 ? <CheckCircle className="w-8 h-8 text-green-500 flex-shrink-0" />
-                : <XCircle className="w-8 h-8 text-red-500 flex-shrink-0" />}
+                : scan.result === "pending"
+                  ? <AlertTriangle className="w-8 h-8 text-amber-500 flex-shrink-0" />
+                  : <XCircle className="w-8 h-8 text-red-500 flex-shrink-0" />}
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-gray-900 truncate">
                   {scan.holderName || "Unknown Holder"}
                 </p>
                 <p className="text-xs text-gray-500">
-                  {scan.station} • {format(new Date(scan.timestamp), "h:mm a")}
+                  {scan.station || "Station"} •{format(new Date(scan.timestamp), "h:mm a")}
                 </p>
               </div>
-              {!scan.synced && (
+              {scan.result === "pending" && !scan.synced && (
+                <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full flex-shrink-0 font-semibold">
+                  Pending verification
+                </span>
+              )}
+              {scan.result === "pending" && scan.synced && (
+                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full flex-shrink-0">
+                  Synced · result unavailable
+                </span>
+              )}
+              {scan.result === "denied" && (
+                <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full flex-shrink-0 font-semibold">
+                  Rejected on sync{scan.serverResult ? `: ${scan.serverResult.replace(/_/g, " ")}` : ""}
+                </span>
+              )}
+              {scan.result === "granted" && !scan.synced && (
                 <span className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full flex-shrink-0">
                   Unsynced
                 </span>

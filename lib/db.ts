@@ -8,10 +8,16 @@ export interface ScanRecord {
   qrData: string;
   station: string;
   timestamp: Date;
-  result: "granted" | "denied";
+  // "pending" = saved while offline and NOT yet validated by the server. It is
+  // never treated as granted until a sync returns the real verdict.
+  result: "granted" | "denied" | "pending";
   holderName?: string;
   synced: boolean;
   epId: string;
+  groupCount?: number;
+  // Real server verdict (e.g. "revoked", "already_used") once the scan has synced
+  serverResult?: string;
+  message?: string;
   // Venue (name) where this scan physically happened. Optional; legacy offline
   // records won't have it. Sent to the backend so per-venue rules and reports work.
   venue?: string;
@@ -34,6 +40,20 @@ export class ScannerDatabase extends Dexie {
     this.version(3).stores({
       scans: "++id, clientScanId, timestamp, synced, station, result, venue",
     });
+    // version 4: offline scans are no longer assumed granted. Every legacy row
+    // came from the offline queue and was never validated, so re-label it pending.
+    this.version(4)
+      .stores({
+        scans: "++id, clientScanId, timestamp, synced, station, result, venue",
+      })
+      .upgrade((tx) =>
+        tx
+          .table("scans")
+          .toCollection()
+          .modify((scan: any) => {
+            if (scan.result === "granted") scan.result = "pending";
+          })
+      );
   }
 }
 
@@ -80,18 +100,28 @@ export async function markScansAsSynced(ids: number[]) {
   }
 }
 
+// Apply the real server verdict (or other changes) to a local scan row
+export async function updateScan(id: number, changes: Partial<ScanRecord>) {
+  try {
+    await db.scans.update(id, changes);
+  } catch (error) {
+    console.error("Failed to update scan:", error);
+  }
+}
+
 export async function getScanStats() {
   try {
     const allScans = await db.scans.toArray();
     const total = allScans.length;
     const granted = allScans.filter((scan) => scan.result === "granted").length;
     const denied = allScans.filter((scan) => scan.result === "denied").length;
+    const pending = allScans.filter((scan) => scan.result === "pending").length;
     const unsynced = allScans.filter((scan) => !scan.synced).length;
 
-    return { total, granted, denied, unsynced };
+    return { total, granted, denied, pending, unsynced };
   } catch (error) {
     console.error("Failed to get scan stats:", error);
-    return { total: 0, granted: 0, denied: 0, unsynced: 0 };
+    return { total: 0, granted: 0, denied: 0, pending: 0, unsynced: 0 };
   }
 }
 
