@@ -5,12 +5,12 @@ import Link from "next/link";
 import {
   ArrowLeft,
   WifiOff,
-  Database,
   HardDrive,
   RefreshCw,
   AlertCircle,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { getScanStats } from "@/lib/db";
 
 export default function OfflinePage() {
   const [storageInfo, setStorageInfo] = useState({
@@ -18,12 +18,12 @@ export default function OfflinePage() {
     total: 0,
     percentage: 0,
   });
-  const [offlineScans, setOfflineScans] = useState<any[]>([]);
+  const [unsyncedCount, setUnsyncedCount] = useState(0);
   const [cacheSize, setCacheSize] = useState(0);
 
   useEffect(() => {
     loadStorageInfo();
-    loadOfflineScans();
+    loadUnsyncedCount();
     estimateCacheSize();
   }, []);
 
@@ -41,9 +41,10 @@ export default function OfflinePage() {
     }
   };
 
-  const loadOfflineScans = () => {
-    const scans = JSON.parse(localStorage.getItem("offlineScans") || "[]");
-    setOfflineScans(scans);
+  // Offline scans live in the IndexedDB queue (lib/db.ts), synced by lib/sync.ts
+  const loadUnsyncedCount = async () => {
+    const stats = await getScanStats();
+    setUnsyncedCount(stats.unsynced);
   };
 
   const estimateCacheSize = () => {
@@ -59,32 +60,25 @@ export default function OfflinePage() {
   const clearCache = () => {
     if (
       confirm(
-        "Clear all cached data? This will remove offline scans and settings.",
+        "Clear cached settings? Offline scans waiting to sync are kept.",
       )
     ) {
       // Keep only essential data
       const token = localStorage.getItem("scannerToken");
       const station = localStorage.getItem("station");
       const volunteerName = localStorage.getItem("volunteerName");
+      const legacyScans = localStorage.getItem("scanHistory"); // not yet migrated to the queue
 
       localStorage.clear();
 
       if (token) localStorage.setItem("scannerToken", token);
       if (station) localStorage.setItem("station", station);
       if (volunteerName) localStorage.setItem("volunteerName", volunteerName);
+      if (legacyScans) localStorage.setItem("scanHistory", legacyScans);
 
       loadStorageInfo();
-      loadOfflineScans();
       estimateCacheSize();
       toast.success("Cache cleared");
-    }
-  };
-
-  const clearOfflineScans = () => {
-    if (confirm("Delete all offline scans?")) {
-      localStorage.setItem("offlineScans", "[]");
-      setOfflineScans([]);
-      toast.success("Offline scans cleared");
     }
   };
 
@@ -157,7 +151,7 @@ export default function OfflinePage() {
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">Offline Scans</span>
               <span className="text-gray-900">
-                {offlineScans.length} pending
+                {unsyncedCount} waiting to sync
               </span>
             </div>
           </div>
@@ -166,14 +160,6 @@ export default function OfflinePage() {
 
       {/* Actions */}
       <div className="p-4 space-y-3">
-        <button
-          onClick={clearOfflineScans}
-          className="w-full py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center justify-center"
-        >
-          <Database className="w-5 h-5 mr-2" />
-          Clear Offline Scans
-        </button>
-
         <button
           onClick={clearCache}
           className="w-full py-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center justify-center"

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import { CheckCircle, XCircle, ArrowLeft, Camera, Wifi, WifiOff } from "lucide-react";
 import toast from "react-hot-toast";
+import { format, isSameDay } from "date-fns";
 import { saveScan, generateClientScanId } from "@/lib/db";
 import { syncService } from "@/lib/sync";
 
@@ -53,7 +54,7 @@ function getResultPresentation(r: any) {
     case "expired":
       return { title: "Pass Expired", emoji: "⌛", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
     case "not_yet_valid":
-      return { title: "Event Not Started", emoji: "🕐", bg: "bg-orange-50", ring: "bg-orange-500", text: "text-orange-900", sub: "text-orange-700", vibrate: [120, 80, 120], sound: "warn" };
+      return { title: r?.windowed ? "Not Valid Yet" : "Event Not Started", emoji: "🕐", bg: "bg-orange-50", ring: "bg-orange-500", text: "text-orange-900", sub: "text-orange-700", vibrate: [120, 80, 120], sound: "warn" };
     case "revoked":
       return { title: "Pass Revoked", emoji: "🚫", bg: "bg-red-50", ring: "bg-red-600", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
     case "not_included":
@@ -70,6 +71,38 @@ function getResultPresentation(r: any) {
     default:
       return { title: "Access Denied", emoji: "❌", bg: "bg-red-50", ring: "bg-red-500", text: "text-red-900", sub: "text-red-700", vibrate: [120, 80, 120, 80, 120], sound: "error" };
   }
+}
+
+// Shifts a date so its local fields read as IST, for date-fns formatting
+function toIST(d: Date) {
+  return new Date(d.getTime() + (330 + d.getTimezoneOffset()) * 60000);
+}
+
+// Windowed pass (session coupon) → "Valid today 11:00 AM – 3:00 PM" / "Valid Sat 11 Oct"
+function windowLabel(r: any): string | null {
+  if (!r?.windowed) return null;
+  const parse = (v: any) => {
+    const d = v ? new Date(v) : null;
+    return d && !isNaN(d.getTime()) ? toIST(d) : null;
+  };
+  const from = parse(r.validFrom);
+  const until = parse(r.validUntil);
+  if (!from && !until) return null;
+  const today = toIST(new Date());
+  const day = (d: Date) => (isSameDay(d, today) ? "today" : format(d, "EEE d MMM"));
+  const time = (d: Date) => format(d, "h:mm a");
+  const startOfDay = (d: Date) => d.getHours() === 0 && d.getMinutes() === 0;
+  const endOfDay = (d: Date) => d.getHours() === 23 && d.getMinutes() === 59;
+
+  if (!from) return `Valid until ${day(until!)} ${time(until!)}`;
+  if (!until) return `Valid from ${day(from)} ${time(from)}`;
+  if (isSameDay(from, until)) {
+    if (startOfDay(from) && endOfDay(until)) return `Valid ${day(from)}`;
+    if (endOfDay(until)) return `Valid ${day(from)} from ${time(from)}`;
+    return `Valid ${day(from)} ${time(from)} – ${time(until)}`;
+  }
+  if (startOfDay(from) && endOfDay(until)) return `Valid ${day(from)} – ${day(until)}`;
+  return `Valid ${day(from)} ${time(from)} – ${day(until)} ${time(until)}`;
 }
 
 // Simple beep via WebAudio — distinct tones for success / warn / error
@@ -659,13 +692,17 @@ export default function ScanPage() {
           result: "pending",
           synced: false,
         });
-      } catch (_) { saved = false; }
+      } catch (saveErr) {
+        console.error("Offline scan could not be saved:", saveErr);
+        saved = false;
+        toast.error("Offline scan NOT saved on this phone — note it on paper", { duration: 10000 });
+      }
       resultShown = {
         success: false,
         result: "pending_verification",
         message: saved
           ? "Not verified — follow manual check policy"
-          : "Not verified and NOT saved — follow manual check policy",
+          : "Not verified and NOT saved — note it on paper and follow manual check policy",
         holderName: "",
       };
     } finally {
@@ -1019,6 +1056,16 @@ export default function ScanPage() {
                     </div>
                   );
                 })()}
+                {(() => {
+                  // COUPON WINDOW — tells the counter at a glance which session this coupon is for
+                  const label = windowLabel(lastResult);
+                  if (!label) return null;
+                  return (
+                    <p className={`mt-3 px-3 py-1.5 rounded-xl bg-black/5 text-sm font-bold ${pres.sub}`}>
+                      🗓️ {label}
+                    </p>
+                  );
+                })()}
                 {(lastResult.subCategory || lastResult.sevaSlot || lastResult.categoryName) && (
                   <div className="mt-3 flex flex-col items-center gap-2">
                     {/* BAHUMANA TIER — the big chip the desk reads to give the right gift */}
@@ -1091,37 +1138,6 @@ export default function ScanPage() {
           <button onClick={handleExit} className="flex-1 py-2.5 text-gray-600 font-medium rounded-lg bg-white text-sm border border-gray-300">Exit</button>
           <button onClick={handleContinue} className="flex-1 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white font-medium rounded-lg text-sm">Continue</button>
         </div>
-        {/* Debug: test scan without camera */}
-        <button
-          onClick={async () => {
-            const token = localStorage.getItem("scannerToken");
-            const stationId = selectedStationRef.current || visibleStations[0]?._id;
-            if (!token) { toast.error("No token"); return; }
-            if (!stationId) { toast.error("No station"); return; }
-            toast("Testing scan API...", { icon: "🧪" });
-            try {
-              const r = await fetch(`${API_URL}/scan`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                body: JSON.stringify({ qrData: "test-invalid-qr", epId: stationId, stationLabel: "test", groupCount: 1, clientScanId: `test-${Date.now()}` }),
-              });
-              if (r.status === 401) {
-                toast.error("Session expired. Please log in again.");
-                localStorage.removeItem("scannerToken");
-                router.push("/");
-                return;
-              }
-              const data = await r.json();
-              toast(`API responded: ${r.status} — ${data.message || data.error || JSON.stringify(data).slice(0, 80)}`, { duration: 5000 });
-              setLastResult(data);
-            } catch (e: any) {
-              toast.error(`Fetch failed: ${e.message}`, { duration: 5000 });
-            }
-          }}
-          className="w-full mt-2 py-2 text-xs text-gray-400 border border-dashed border-gray-300 rounded-lg"
-        >
-          🧪 Test Scan (bypass camera)
-        </button>
       </div>
 
       <style jsx global>{`

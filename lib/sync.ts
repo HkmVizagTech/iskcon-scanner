@@ -1,6 +1,6 @@
 import toast from "react-hot-toast";
 import { api } from "./api";
-import { getUnsyncedScans, markScansAsSynced, updateScan } from "./db";
+import { generateClientScanId, getUnsyncedScans, markScansAsSynced, migrateLegacyFallbackScans, updateScan } from "./db";
 
 const SYNC_INTERVAL = 30000; // 30 seconds
 export const SYNC_DONE_EVENT = "scanner:sync-done";
@@ -24,7 +24,7 @@ class SyncService {
   start() {
     // FIX: guard against double-start (component remount / hot reload)
     if (this.syncTimer !== null) return;
-    this.sync();
+    migrateLegacyFallbackScans().then(() => this.sync());
     this.syncTimer = setInterval(() => { this.sync(); }, SYNC_INTERVAL);
     window.addEventListener("online", this.onlineHandler);
   }
@@ -52,11 +52,21 @@ class SyncService {
     this.isSyncing = true;
 
     try {
+      await migrateLegacyFallbackScans();
       const unsyncedScans = await getUnsyncedScans();
 
       if (unsyncedScans.length === 0) {
         this.isSyncing = false;
         return;
+      }
+
+      // Legacy rows without a clientScanId get a stable one now, so a retry is
+      // recognised by the server and the verdict can be matched back to the row
+      for (const scan of unsyncedScans) {
+        if (!scan.clientScanId) {
+          scan.clientScanId = generateClientScanId();
+          await updateScan(scan.id!, { clientScanId: scan.clientScanId });
+        }
       }
 
       const scansToSync = unsyncedScans.map((scan) => ({
@@ -65,9 +75,7 @@ class SyncService {
         stationLabel: scan.station,
         venue: scan.venue,
         groupCount: scan.groupCount || 1,
-        // FIX: use the stable UUID stored in the record — not derived from auto-increment id
-        // which resets after DB clear and causes false duplicate detection on the server
-        client_scan_id: scan.clientScanId || `scan-${scan.id}-${Date.now()}`,
+        client_scan_id: scan.clientScanId,
         timestamp: scan.timestamp,
       }));
 

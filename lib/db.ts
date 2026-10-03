@@ -64,21 +64,59 @@ export function generateClientScanId(): string {
 
 export const db = new ScannerDatabase();
 
-// Save scan to IndexedDB
+// Save scan to IndexedDB. Throws if it cannot be stored — the caller must tell
+// the volunteer the scan was NOT saved (there is no second, unsynced store).
 export async function saveScan(scan: Omit<ScanRecord, "id">) {
+  return db.scans.add(scan);
+}
+
+// Older builds parked scans in localStorage when IndexedDB failed, and nothing
+// ever synced them. Move any such leftovers into the queue (as unverified).
+const LEGACY_FALLBACK_KEY = "scanHistory";
+let migrating: Promise<void> | null = null;
+
+export function migrateLegacyFallbackScans(): Promise<void> {
+  if (!migrating) {
+    migrating = drainLegacyFallback().finally(() => { migrating = null; });
+  }
+  return migrating;
+}
+
+async function drainLegacyFallback() {
+  let items: any[];
   try {
-    const id = await db.scans.add(scan);
-    return id;
+    const raw = localStorage.getItem(LEGACY_FALLBACK_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    items = Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    console.error("Failed to save scan:", error);
-    // Fallback to localStorage
-    const scans = JSON.parse(localStorage.getItem("scanHistory") || "[]");
-    scans.push({
-      ...scan,
-      id: Date.now().toString(),
+    console.error("Unreadable legacy offline scans:", error);
+    return;
+  }
+  try {
+    await db.transaction("rw", db.scans, async () => {
+      for (const s of items) {
+        if (!s || typeof s.qrData !== "string" || !s.epId) continue;
+        const clientScanId = typeof s.clientScanId === "string" && s.clientScanId ? s.clientScanId : generateClientScanId();
+        if ((await db.scans.where("clientScanId").equals(clientScanId).count()) > 0) continue;
+        const ts = new Date(s.timestamp);
+        await db.scans.add({
+          clientScanId,
+          qrData: s.qrData,
+          station: s.station || "",
+          timestamp: isNaN(ts.getTime()) ? new Date() : ts,
+          result: "pending",
+          synced: false,
+          epId: String(s.epId),
+          groupCount: s.groupCount,
+          venue: s.venue,
+        });
+      }
     });
-    localStorage.setItem("scanHistory", JSON.stringify(scans));
-    return Date.now();
+    localStorage.removeItem(LEGACY_FALLBACK_KEY);
+  } catch (error) {
+    // IndexedDB still unavailable — keep them for the next attempt
+    console.error("Failed to migrate legacy offline scans:", error);
   }
 }
 
